@@ -32,6 +32,25 @@ class ConfigService {
 
   static void clearCache() => _cache = null;
 
+  // ── Google Sheets class CRUD ──────────────────────────────────────────────
+
+  static Future<void> addClass(Map<String, String> fields) =>
+      _sheetAction('add_class', fields);
+
+  static Future<void> updateClass(
+          String originalKey, Map<String, String> fields) =>
+      _sheetAction('update_class', {'originalKey': originalKey, ...fields});
+
+  static Future<void> deleteClass(String key) =>
+      _sheetAction('delete_class', {'key': key});
+
+  static Future<void> _sheetAction(
+      String action, Map<String, String> params) async {
+    final uri = Uri.parse(_scriptUrl).replace(
+        queryParameters: {'action': action, ...params});
+    await http.get(uri).timeout(const Duration(seconds: 10));
+  }
+
   /// Records a transaction row to the Transactions sheet via the same Apps Script.
   static Future<void> recordTransaction({
     required String invoiceNumber,

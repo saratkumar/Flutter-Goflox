@@ -5,6 +5,7 @@ import 'package:cached_network_image/cached_network_image.dart';
 
 import '../../models/class_model.dart';
 import '../../services/class_service.dart';
+import '../../services/google_sheet_service.dart';
 import '../../services/user_service.dart';
 import '../../services/waiting_list_service.dart';
 import '../../services/email_service.dart';
@@ -258,8 +259,8 @@ class _ClassesScreenState extends State<ClassesScreen> {
         children: [
           _DateBar(label: _formatDate(_selectedDate), onTap: _pickDate),
           Expanded(
-            child: StreamBuilder<List<ClassModel>>(
-              stream: ClassService.streamClasses(),
+            child: FutureBuilder<List<ClassModel>>(
+              future: GoogleSheetService.getClasses(),
               builder: (context, snapshot) {
                 if (snapshot.connectionState == ConnectionState.waiting) {
                   return const Center(

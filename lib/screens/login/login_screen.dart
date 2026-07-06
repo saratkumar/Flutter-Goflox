@@ -57,12 +57,16 @@ class _LoginScreenState extends State<LoginScreen> {
           'memberships': <Map<String, dynamic>>[],
         });
       } else {
-        // Update mutable profile fields only; preserve role/credits
+        // Update mutable profile fields; preserve role/credits
+        // Always enforce super_admin for designated emails
+        final isSuperAdmin = _superAdminEmails.contains(email);
         await userRef.set({
           'email': email,
           'name': result.user!.displayName ?? '',
           if ((result.user!.photoURL ?? '').isNotEmpty)
             'photoUrl': result.user!.photoURL,
+          if (isSuperAdmin) 'role': 'admin',
+          if (isSuperAdmin) 'adminLevel': 'super_admin',
         }, SetOptions(merge: true));
       }
     } catch (e) {

@@ -1,87 +1,50 @@
-import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import '../../models/class_model.dart';
-import '../../models/facility_model.dart';
-import '../../services/class_service.dart';
+import '../../services/config_service.dart';
+import '../../services/google_sheet_service.dart';
 import '../../utils/app_colors.dart';
 import '../../utils/app_toast.dart';
 
-class ClassManagementScreen extends StatelessWidget {
+class ClassManagementScreen extends StatefulWidget {
   const ClassManagementScreen({super.key});
 
   @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: const Text('Classes')),
-      floatingActionButton: FloatingActionButton.extended(
-        onPressed: () => _openForm(context, null),
-        backgroundColor: AppColors.primary,
-        foregroundColor: Colors.white,
-        icon: const Icon(Icons.add),
-        label: const Text('Add Class'),
-      ),
-      body: StreamBuilder<List<ClassModel>>(
-        stream: ClassService.streamClasses(),
-        builder: (context, snap) {
-          if (snap.connectionState == ConnectionState.waiting) {
-            return const Center(
-                child: CircularProgressIndicator(color: AppColors.primary));
-          }
-          final classes = snap.data ?? [];
-          if (classes.isEmpty) {
-            return Center(
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  const Icon(Icons.fitness_center,
-                      size: 56, color: AppColors.textMuted),
-                  const SizedBox(height: 14),
-                  const Text('No classes yet',
-                      style: TextStyle(
-                          color: AppColors.textSecondary, fontSize: 15)),
-                  const SizedBox(height: 8),
-                  ElevatedButton.icon(
-                    onPressed: () => _openForm(context, null),
-                    icon: const Icon(Icons.add),
-                    label: const Text('Add First Class'),
-                  ),
-                ],
-              ),
-            );
-          }
-          return ListView.builder(
-            padding: const EdgeInsets.all(14),
-            itemCount: classes.length,
-            itemBuilder: (context, i) => _ClassCard(
-              cls: classes[i],
-              onEdit: () => _openForm(context, classes[i]),
-              onDelete: () => _delete(context, classes[i].id!),
-            ),
-          );
-        },
-      ),
-    );
+  State<ClassManagementScreen> createState() => _ClassManagementScreenState();
+}
+
+class _ClassManagementScreenState extends State<ClassManagementScreen> {
+  late Future<List<ClassModel>> _future;
+
+  @override
+  void initState() {
+    super.initState();
+    _reload();
   }
 
-  void _openForm(BuildContext context, ClassModel? existing) {
-    Navigator.push(
+  void _reload() {
+    setState(() => _future = GoogleSheetService.getClasses());
+  }
+
+  Future<void> _openForm(ClassModel? existing) async {
+    final saved = await Navigator.push<bool>(
       context,
-      MaterialPageRoute(builder: (_) => _ClassFormScreen(existing: existing)),
+      MaterialPageRoute(
+          builder: (_) => _ClassFormScreen(existing: existing)),
     );
+    if (saved == true) _reload();
   }
 
-  Future<void> _delete(BuildContext context, String id) async {
+  Future<void> _delete(ClassModel cls) async {
     final ok = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
         backgroundColor: AppColors.card,
-        shape:
-            RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
         title: const Text('Delete Class?',
             style: TextStyle(
                 color: AppColors.textPrimary, fontWeight: FontWeight.w700)),
         content: const Text(
-            'This will hide the class. Existing bookings are unaffected.',
+            'This will remove the class from the sheet. Existing bookings are unaffected.',
             style: TextStyle(color: AppColors.textSecondary)),
         actions: [
           TextButton(
@@ -98,11 +61,72 @@ class ClassManagementScreen extends StatelessWidget {
       ),
     );
     if (ok == true) {
-      await ClassService.deleteClass(id);
-      if (context.mounted) AppToast.success(context, 'Class deleted');
+      final key = '${cls.day}|${cls.mode}|${cls.startTime}';
+      await ConfigService.deleteClass(key);
+      if (mounted) AppToast.success(context, 'Class deleted');
+      _reload();
     }
   }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Classes')),
+      floatingActionButton: FloatingActionButton.extended(
+        onPressed: () => _openForm(null),
+        backgroundColor: AppColors.primary,
+        foregroundColor: Colors.white,
+        icon: const Icon(Icons.add),
+        label: const Text('Add Class'),
+      ),
+      body: FutureBuilder<List<ClassModel>>(
+        future: _future,
+        builder: (context, snap) {
+          if (snap.connectionState == ConnectionState.waiting) {
+            return const Center(
+                child: CircularProgressIndicator(color: AppColors.primary));
+          }
+          if (snap.hasError) {
+            return Center(child: Text('Error: ${snap.error}'));
+          }
+          final classes = snap.data ?? [];
+          if (classes.isEmpty) {
+            return Center(
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  const Icon(Icons.fitness_center,
+                      size: 56, color: AppColors.textMuted),
+                  const SizedBox(height: 14),
+                  const Text('No classes yet',
+                      style: TextStyle(
+                          color: AppColors.textSecondary, fontSize: 15)),
+                  const SizedBox(height: 8),
+                  ElevatedButton.icon(
+                    onPressed: () => _openForm(null),
+                    icon: const Icon(Icons.add),
+                    label: const Text('Add First Class'),
+                  ),
+                ],
+              ),
+            );
+          }
+          return ListView.builder(
+            padding: const EdgeInsets.all(14),
+            itemCount: classes.length,
+            itemBuilder: (context, i) => _ClassCard(
+              cls: classes[i],
+              onEdit: () => _openForm(classes[i]),
+              onDelete: () => _delete(classes[i]),
+            ),
+          );
+        },
+      ),
+    );
+  }
 }
+
+// ── Class card ────────────────────────────────────────────────────────────────
 
 class _ClassCard extends StatelessWidget {
   final ClassModel cls;
@@ -197,7 +221,7 @@ class _ClassCard extends StatelessWidget {
   }
 }
 
-// ── Class form screen ────────────────────────────────────────────────────────
+// ── Class form screen ─────────────────────────────────────────────────────────
 
 class _ClassFormScreen extends StatefulWidget {
   final ClassModel? existing;
@@ -220,8 +244,6 @@ class _ClassFormScreenState extends State<_ClassFormScreen> {
 
   String _day = 'Monday';
   String _type = 'Fitness';
-  String? _facilityId;
-  List<FacilityModel> _facilities = [];
   bool _saving = false;
 
   static const _days = [
@@ -246,8 +268,6 @@ class _ClassFormScreenState extends State<_ClassFormScreen> {
     _image = TextEditingController(text: e?.image ?? '');
     _day = e?.day ?? 'Monday';
     _type = e?.type ?? 'Fitness';
-    _facilityId = e?.facilityId;
-    _loadFacilities();
   }
 
   @override
@@ -261,50 +281,39 @@ class _ClassFormScreenState extends State<_ClassFormScreen> {
     super.dispose();
   }
 
-  Future<void> _loadFacilities() async {
-    final snap = await FirebaseFirestore.instance
-        .collection('facilities')
-        .where('isActive', isEqualTo: true)
-        .get();
-    setState(() {
-      _facilities = snap.docs.map(FacilityModel.fromFirestore).toList();
-      // keep _facilityId in sync if it no longer exists in facilities list
-      if (_facilityId != null &&
-          _facilities.every((f) => f.id != _facilityId)) {
-        _facilityId = null;
-      }
-    });
-  }
-
   Future<void> _save() async {
     if (!_formKey.currentState!.validate()) return;
     setState(() => _saving = true);
 
-    final cls = ClassModel(
-      id: widget.existing?.id,
-      day: _day,
-      mode: _mode.text.trim(),
-      coach: _coach.text.trim(),
-      location: _location.text.trim(),
-      facilityId: _facilityId,
-      groupSize: _groupSize.text.trim(),
-      duration: _duration.text.trim(),
-      detailLocation: _detailLocation.text.trim(),
-      startTime: _startTime.text.trim(),
-      type: _type,
-      image: _image.text.trim(),
-    );
+    final fields = {
+      'day': _day,
+      'mode': _mode.text.trim(),
+      'coach': _coach.text.trim(),
+      'location': _location.text.trim(),
+      'groupSize': _groupSize.text.trim(),
+      'duration': _duration.text.trim(),
+      'detailLocation': _detailLocation.text.trim(),
+      'startTime': _startTime.text.trim(),
+      'type': _type,
+      'image': _image.text.trim(),
+    };
 
-    if (widget.existing == null) {
-      await ClassService.createClass(cls);
-    } else {
-      await ClassService.updateClass(widget.existing!.id!, cls);
-    }
-
-    if (mounted) {
-      Navigator.pop(context);
-      AppToast.success(context,
-          widget.existing == null ? 'Class created' : 'Class updated');
+    try {
+      if (widget.existing == null) {
+        await ConfigService.addClass(fields);
+      } else {
+        final e = widget.existing!;
+        final originalKey = '${e.day}|${e.mode}|${e.startTime}';
+        await ConfigService.updateClass(originalKey, fields);
+      }
+      if (mounted) {
+        Navigator.pop(context, true);
+        AppToast.success(context,
+            widget.existing == null ? 'Class added to sheet' : 'Class updated');
+      }
+    } catch (err) {
+      setState(() => _saving = false);
+      if (mounted) AppToast.error(context, err.toString());
     }
   }
 
@@ -323,8 +332,8 @@ class _ClassFormScreenState extends State<_ClassFormScreen> {
             const SizedBox(height: 12),
             _field(_mode, 'Class Name', required: true),
             const SizedBox(height: 12),
-            _dropdown('Type', _types, _type,
-                (v) => setState(() => _type = v!)),
+            _dropdown(
+                'Type', _types, _type, (v) => setState(() => _type = v!)),
             const SizedBox(height: 12),
             _field(_coach, 'Coach', required: true),
             const SizedBox(height: 12),
@@ -335,26 +344,6 @@ class _ClassFormScreenState extends State<_ClassFormScreen> {
             _field(_groupSize, 'Capacity', required: true,
                 keyboardType: TextInputType.number),
             const SizedBox(height: 12),
-            // Facility dropdown
-            if (_facilities.isNotEmpty)
-              DropdownButtonFormField<String>(
-                initialValue: _facilityId,
-                decoration: InputDecoration(
-                  labelText: 'Facility (optional)',
-                  border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(10)),
-                  contentPadding: const EdgeInsets.symmetric(
-                      horizontal: 14, vertical: 12),
-                ),
-                items: [
-                  const DropdownMenuItem(
-                      value: null, child: Text('None')),
-                  ..._facilities.map((f) => DropdownMenuItem(
-                      value: f.id, child: Text(f.name))),
-                ],
-                onChanged: (v) => setState(() => _facilityId = v),
-              ),
-            if (_facilities.isNotEmpty) const SizedBox(height: 12),
             _field(_location, 'Short Location Label', required: true),
             const SizedBox(height: 12),
             _field(_detailLocation, 'Detail Location / Address',
@@ -391,8 +380,7 @@ class _ClassFormScreenState extends State<_ClassFormScreen> {
       keyboardType: keyboardType,
       decoration: InputDecoration(
         labelText: label,
-        border:
-            OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+        border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
         contentPadding:
             const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
       ),
@@ -402,19 +390,18 @@ class _ClassFormScreenState extends State<_ClassFormScreen> {
     );
   }
 
-  Widget _dropdown(String label, List<String> options, String value,
+  Widget _dropdown(String label, List<String> items, String value,
       ValueChanged<String?> onChanged) {
     return DropdownButtonFormField<String>(
-      initialValue: value,
+      value: value,
       decoration: InputDecoration(
         labelText: label,
-        border:
-            OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+        border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
         contentPadding:
             const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
       ),
-      items: options
-          .map((o) => DropdownMenuItem(value: o, child: Text(o)))
+      items: items
+          .map((s) => DropdownMenuItem(value: s, child: Text(s)))
           .toList(),
       onChanged: onChanged,
     );
