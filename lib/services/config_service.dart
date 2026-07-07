@@ -132,6 +132,24 @@ class ConfigService {
     await http.get(uri).timeout(const Duration(seconds: 10));
   }
 
+  // ── Transactions ──────────────────────────────────────────────────────────────
+
+  /// Fetches all rows from the Transactions sheet.
+  /// Returns [{invoiceNumber, txId, clientName, clientEmail, planName, credits, amount, currency, date}, …]
+  static Future<List<Map<String, String>>> getTransactions() async {
+    final uri = Uri.parse(_scriptUrl)
+        .replace(queryParameters: {'action': 'get_transactions'});
+    final response =
+        await http.get(uri).timeout(const Duration(seconds: 15));
+    if (response.statusCode != 200) return [];
+    final data = jsonDecode(response.body);
+    if (data is! List) return [];
+    return data
+        .map<Map<String, String>>((e) =>
+            (e as Map).map((k, v) => MapEntry(k.toString(), v.toString())))
+        .toList();
+  }
+
   /// Records a transaction row to the Transactions sheet via the same Apps Script.
   static Future<void> recordTransaction({
     required String invoiceNumber,

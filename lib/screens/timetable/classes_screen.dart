@@ -38,6 +38,9 @@ class _ClassesScreenState extends State<ClassesScreen> {
 
   // Returns true if the class should appear on the given date based on occurrence.
   bool _matchesDate(ClassModel cls, DateTime date) {
+    final dayName = _dayNames[date.weekday - 1];
+    // day field may be comma-separated for weekly: "Monday,Wednesday,Friday"
+    final classDays = cls.day.split(',').map((d) => d.trim()).toSet();
     switch (cls.occurrence) {
       case 'daily':
         return true;
@@ -53,9 +56,7 @@ class _ClassesScreenState extends State<ClassesScreen> {
       case 'monthly':
         // Matches if same day-of-week AND same week-of-month as specificDate.
         if (cls.specificDate == null) {
-          // Fallback: same day of week, first occurrence of month only.
-          return cls.day == _selectedDayName &&
-              date.day <= 7;
+          return classDays.contains(dayName) && date.day <= 7;
         }
         final parts = cls.specificDate!.split('-');
         if (parts.length < 3) return false;
@@ -63,10 +64,10 @@ class _ClassesScreenState extends State<ClassesScreen> {
             int.parse(parts[0]), int.parse(parts[1]), int.parse(parts[2]));
         final refWeek = ((ref.day - 1) ~/ 7) + 1;
         final selWeek = ((date.day - 1) ~/ 7) + 1;
-        return cls.day == _selectedDayName && selWeek == refWeek;
+        return classDays.contains(dayName) && selWeek == refWeek;
       case 'weekly':
       default:
-        return cls.day == _selectedDayName;
+        return classDays.contains(dayName);
     }
   }
 

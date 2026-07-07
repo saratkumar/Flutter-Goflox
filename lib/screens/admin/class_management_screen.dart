@@ -141,6 +141,28 @@ class _ClassCard extends StatelessWidget {
   const _ClassCard(
       {required this.cls, required this.onEdit, required this.onDelete});
 
+  static const _abbr = {
+    'Monday': 'Mon', 'Tuesday': 'Tue', 'Wednesday': 'Wed',
+    'Thursday': 'Thu', 'Friday': 'Fri', 'Saturday': 'Sat', 'Sunday': 'Sun',
+  };
+  static const _ordered = [
+    'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'
+  ];
+
+  static String _formatDay(String day, String occurrence) {
+    if (occurrence == 'daily') return 'Every day';
+    if (occurrence == 'once') return 'Once';
+    if (occurrence == 'monthly') return 'Monthly';
+    final days = day.split(',').map((d) => d.trim()).where((d) => d.isNotEmpty).toSet();
+    if (days.length == 7) { return 'Every day'; }
+    if (days.length == 5 &&
+        !days.contains('Saturday') && !days.contains('Sunday')) { return 'Weekdays'; }
+    if (days.length == 2 &&
+        days.contains('Saturday') && days.contains('Sunday')) { return 'Weekends'; }
+    final sorted = _ordered.where(days.contains).map((d) => _abbr[d] ?? d).toList();
+    return sorted.isEmpty ? day : sorted.join(', ');
+  }
+
   @override
   Widget build(BuildContext context) {
     return Container(
@@ -195,7 +217,7 @@ class _ClassCard extends StatelessWidget {
                 ),
                 const SizedBox(height: 4),
                 Text(
-                    '${cls.day} · ${cls.startTime} · ${cls.duration} · Cap: ${cls.groupSize}',
+                    '${_formatDay(cls.day, cls.occurrence)} · ${cls.startTime} · ${cls.duration} · Cap: ${cls.groupSize}',
                     style: const TextStyle(
                         fontSize: 12, color: AppColors.textSecondary)),
                 Text('${cls.location} · ${cls.coach}',
@@ -565,7 +587,20 @@ class _ClassFormScreenState extends State<_ClassFormScreen> {
               child: Text(f['name'] ?? f['id'] ?? ''),
             )),
       ],
-      onChanged: (v) => setState(() => _selectedFacilityId = v),
+      onChanged: (v) {
+        setState(() => _selectedFacilityId = v);
+        if (v == null) return;
+        final fac = _facilities.firstWhere(
+            (f) => f['id'] == v, orElse: () => {});
+        if (fac.isNotEmpty) {
+          if (_location.text.trim().isEmpty) {
+            _location.text = fac['name'] ?? '';
+          }
+          if (_detailLocation.text.trim().isEmpty) {
+            _detailLocation.text = fac['address'] ?? '';
+          }
+        }
+      },
     );
   }
 

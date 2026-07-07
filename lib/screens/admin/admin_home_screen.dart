@@ -6,6 +6,7 @@ import 'type_management_screen.dart';
 import 'admin_requests_screen.dart';
 import 'user_management_screen.dart';
 import 'attendance_report_screen.dart';
+import 'transactions_screen.dart';
 
 class AdminHomeScreen extends StatelessWidget {
   const AdminHomeScreen({super.key});
@@ -75,6 +76,15 @@ class AdminHomeScreen extends StatelessWidget {
             title: 'Attendance Report',
             subtitle: 'Month-wise log of bookings, cancellations & waitlist',
             page: const AttendanceReportScreen(),
+          ),
+          const SizedBox(height: 10),
+          _tile(
+            context,
+            icon: Icons.receipt_long_outlined,
+            color: const Color(0xFF66BB6A),
+            title: 'Transactions',
+            subtitle: 'Payment history, revenue summary and invoice lookup',
+            page: const TransactionsScreen(),
           ),
         ],
       ),
