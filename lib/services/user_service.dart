@@ -59,6 +59,43 @@ class UserService {
     });
   }
 
+  /// Creates a pre-registration invitation. When the invited email first
+  /// signs in via Google, the login flow consumes this and applies the
+  /// pre-set role, phone, and initial credits.
+  static Future<void> createInvitation({
+    required String email,
+    required String name,
+    required String phone,
+    required String role,
+    required int initialCredits,
+    String? adminLevel,
+  }) async {
+    await _db
+        .collection('invitations')
+        .doc(email.toLowerCase().trim())
+        .set({
+      'email': email.toLowerCase().trim(),
+      'name': name,
+      'phone': phone,
+      'role': role,
+      if (adminLevel != null && adminLevel.isNotEmpty) 'adminLevel': adminLevel,
+      'initialCredits': initialCredits,
+      'createdAt': FieldValue.serverTimestamp(),
+    });
+  }
+
+  /// Reads and deletes the invitation for this email (one-time use).
+  static Future<Map<String, dynamic>?> consumeInvitation(String email) async {
+    final doc = await _db
+        .collection('invitations')
+        .doc(email.toLowerCase().trim())
+        .get();
+    if (!doc.exists) return null;
+    final data = Map<String, dynamic>.from(doc.data()!);
+    await doc.reference.delete();
+    return data;
+  }
+
   static Future<void> deductCredit(String uid) async {
     await _db.collection('users').doc(uid).update({
       'credits': FieldValue.increment(-1),

@@ -1,93 +1,51 @@
-import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
-import '../../models/facility_model.dart';
+import '../../services/config_service.dart';
 import '../../utils/app_colors.dart';
 import '../../utils/app_toast.dart';
 
-class FacilityManagementScreen extends StatelessWidget {
+class FacilityManagementScreen extends StatefulWidget {
   const FacilityManagementScreen({super.key});
 
   @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: const Text('Facilities')),
-      floatingActionButton: FloatingActionButton.extended(
-        onPressed: () => _openForm(context, null),
-        backgroundColor: AppColors.primary,
-        foregroundColor: Colors.white,
-        icon: const Icon(Icons.add),
-        label: const Text('Add Facility'),
-      ),
-      body: StreamBuilder<QuerySnapshot>(
-        stream: FirebaseFirestore.instance
-            .collection('facilities')
-            .where('isActive', isEqualTo: true)
-            .snapshots(),
-        builder: (context, snap) {
-          if (snap.connectionState == ConnectionState.waiting) {
-            return const Center(
-                child: CircularProgressIndicator(color: AppColors.primary));
-          }
-          final docs = snap.data?.docs ?? [];
-          if (docs.isEmpty) {
-            return Center(
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  const Icon(Icons.place_outlined,
-                      size: 56, color: AppColors.textMuted),
-                  const SizedBox(height: 14),
-                  const Text('No facilities yet',
-                      style: TextStyle(
-                          color: AppColors.textSecondary, fontSize: 15)),
-                  const SizedBox(height: 8),
-                  ElevatedButton.icon(
-                    onPressed: () => _openForm(context, null),
-                    icon: const Icon(Icons.add),
-                    label: const Text('Add First Facility'),
-                  ),
-                ],
-              ),
-            );
-          }
-          return ListView.builder(
-            padding: const EdgeInsets.all(14),
-            itemCount: docs.length,
-            itemBuilder: (context, i) {
-              final facility = FacilityModel.fromFirestore(docs[i]);
-              return _FacilityCard(
-                facility: facility,
-                onEdit: () => _openForm(context, facility),
-                onDelete: () => _delete(context, facility.id!),
-              );
-            },
-          );
-        },
-      ),
-    );
+  State<FacilityManagementScreen> createState() =>
+      _FacilityManagementScreenState();
+}
+
+class _FacilityManagementScreenState
+    extends State<FacilityManagementScreen> {
+  late Future<List<Map<String, String>>> _future;
+
+  @override
+  void initState() {
+    super.initState();
+    _reload();
   }
 
-  Future<void> _openForm(
-      BuildContext context, FacilityModel? existing) async {
-    await showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: AppColors.bg,
-      shape: const RoundedRectangleBorder(
-          borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
-      builder: (_) => _FacilityForm(existing: existing),
-    );
+  void _reload() {
+    if (!mounted) return;
+    setState(() {
+      _future = ConfigService.getFacilities();
+    });
   }
 
-  Future<void> _delete(BuildContext context, String id) async {
+  Future<void> _openForm([Map<String, String>? existing]) async {
+    final saved = await Navigator.push<bool>(
+      context,
+      MaterialPageRoute(
+          builder: (_) => _FacilityFormScreen(existing: existing)),
+    );
+    if (saved == true && mounted) _reload();
+  }
+
+  Future<void> _delete(Map<String, String> facility) async {
     final ok = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
         backgroundColor: AppColors.card,
         shape:
             RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
-        title: const Text('Delete Facility?',
-            style: TextStyle(
+        title: Text('Delete "${facility['name']}"?',
+            style: const TextStyle(
                 color: AppColors.textPrimary, fontWeight: FontWeight.w700)),
         content: const Text('This cannot be undone.',
             style: TextStyle(color: AppColors.textSecondary)),
@@ -106,17 +64,76 @@ class FacilityManagementScreen extends StatelessWidget {
       ),
     );
     if (ok == true) {
-      await FirebaseFirestore.instance
-          .collection('facilities')
-          .doc(id)
-          .update({'isActive': false});
-      if (context.mounted) AppToast.success(context, 'Facility deleted');
+      await ConfigService.deleteFacility(facility['id']!);
+      if (mounted) {
+        AppToast.success(context, 'Facility deleted');
+        _reload();
+      }
     }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Facilities')),
+      floatingActionButton: FloatingActionButton.extended(
+        onPressed: () => _openForm(),
+        backgroundColor: AppColors.primary,
+        foregroundColor: Colors.white,
+        icon: const Icon(Icons.add),
+        label: const Text('Add Facility'),
+      ),
+      body: FutureBuilder<List<Map<String, String>>>(
+        future: _future,
+        builder: (context, snap) {
+          if (snap.connectionState == ConnectionState.waiting) {
+            return const Center(
+                child: CircularProgressIndicator(color: AppColors.primary));
+          }
+          if (snap.hasError) {
+            return Center(child: Text('Error: ${snap.error}'));
+          }
+          final facilities = snap.data ?? [];
+          if (facilities.isEmpty) {
+            return Center(
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  const Icon(Icons.place_outlined,
+                      size: 56, color: AppColors.textMuted),
+                  const SizedBox(height: 14),
+                  const Text('No facilities yet',
+                      style: TextStyle(
+                          color: AppColors.textSecondary, fontSize: 15)),
+                  const SizedBox(height: 8),
+                  ElevatedButton.icon(
+                    onPressed: () => _openForm(),
+                    icon: const Icon(Icons.add),
+                    label: const Text('Add First Facility'),
+                  ),
+                ],
+              ),
+            );
+          }
+          return ListView.builder(
+            padding: const EdgeInsets.fromLTRB(14, 14, 14, 100),
+            itemCount: facilities.length,
+            itemBuilder: (_, i) => _FacilityCard(
+              facility: facilities[i],
+              onEdit: () => _openForm(facilities[i]),
+              onDelete: () => _delete(facilities[i]),
+            ),
+          );
+        },
+      ),
+    );
   }
 }
 
+// ── Facility card ─────────────────────────────────────────────────────────────
+
 class _FacilityCard extends StatelessWidget {
-  final FacilityModel facility;
+  final Map<String, String> facility;
   final VoidCallback onEdit;
   final VoidCallback onDelete;
 
@@ -151,18 +168,18 @@ class _FacilityCard extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(facility.name,
+                Text(facility['name'] ?? '',
                     style: const TextStyle(
                         fontSize: 16,
                         fontWeight: FontWeight.w700,
                         color: AppColors.textPrimary)),
                 const SizedBox(height: 3),
-                Text(facility.address,
+                Text(facility['address'] ?? '',
                     style: const TextStyle(
                         fontSize: 12, color: AppColors.textSecondary)),
-                if (facility.description.isNotEmpty) ...[
+                if ((facility['description'] ?? '').isNotEmpty) ...[
                   const SizedBox(height: 4),
-                  Text(facility.description,
+                  Text(facility['description']!,
                       style: const TextStyle(
                           fontSize: 12, color: AppColors.textMuted)),
                 ],
@@ -191,15 +208,17 @@ class _FacilityCard extends StatelessWidget {
   }
 }
 
-class _FacilityForm extends StatefulWidget {
-  final FacilityModel? existing;
-  const _FacilityForm({this.existing});
+// ── Facility form screen ──────────────────────────────────────────────────────
+
+class _FacilityFormScreen extends StatefulWidget {
+  final Map<String, String>? existing;
+  const _FacilityFormScreen({this.existing});
 
   @override
-  State<_FacilityForm> createState() => _FacilityFormState();
+  State<_FacilityFormScreen> createState() => _FacilityFormScreenState();
 }
 
-class _FacilityFormState extends State<_FacilityForm> {
+class _FacilityFormScreenState extends State<_FacilityFormScreen> {
   final _formKey = GlobalKey<FormState>();
   late final TextEditingController _name;
   late final TextEditingController _address;
@@ -209,9 +228,10 @@ class _FacilityFormState extends State<_FacilityForm> {
   @override
   void initState() {
     super.initState();
-    _name = TextEditingController(text: widget.existing?.name ?? '');
-    _address = TextEditingController(text: widget.existing?.address ?? '');
-    _desc = TextEditingController(text: widget.existing?.description ?? '');
+    _name = TextEditingController(text: widget.existing?['name'] ?? '');
+    _address = TextEditingController(text: widget.existing?['address'] ?? '');
+    _desc =
+        TextEditingController(text: widget.existing?['description'] ?? '');
   }
 
   @override
@@ -225,70 +245,60 @@ class _FacilityFormState extends State<_FacilityForm> {
   Future<void> _save() async {
     if (!_formKey.currentState!.validate()) return;
     setState(() => _saving = true);
-
-    final facility = FacilityModel(
-      id: widget.existing?.id,
-      name: _name.text.trim(),
-      address: _address.text.trim(),
-      description: _desc.text.trim(),
-    );
-
-    final col =
-        FirebaseFirestore.instance.collection('facilities');
-    if (widget.existing == null) {
-      await col.add(facility.toFirestore());
-    } else {
-      await col.doc(widget.existing!.id).update(facility.toFirestore());
-    }
-
-    if (mounted) {
-      Navigator.pop(context);
-      AppToast.success(context,
-          widget.existing == null ? 'Facility added' : 'Facility updated');
+    try {
+      if (widget.existing == null) {
+        await ConfigService.addFacility(
+          _name.text.trim(),
+          _address.text.trim(),
+          _desc.text.trim(),
+        );
+      } else {
+        await ConfigService.updateFacility(
+          widget.existing!['id']!,
+          _name.text.trim(),
+          _address.text.trim(),
+          _desc.text.trim(),
+        );
+      }
+      if (mounted) {
+        Navigator.pop(context, true);
+        AppToast.success(context,
+            widget.existing == null ? 'Facility added' : 'Facility updated');
+      }
+    } catch (err) {
+      setState(() => _saving = false);
+      if (mounted) AppToast.error(context, err.toString());
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    return Padding(
-      padding: EdgeInsets.only(
-        left: 20,
-        right: 20,
-        top: 24,
-        bottom: MediaQuery.of(context).viewInsets.bottom + 24,
-      ),
-      child: Form(
+    return Scaffold(
+      appBar: AppBar(
+          title: Text(
+              widget.existing == null ? 'New Facility' : 'Edit Facility')),
+      body: Form(
         key: _formKey,
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
+        child: ListView(
+          padding: const EdgeInsets.all(16),
           children: [
-            Text(
-              widget.existing == null ? 'Add Facility' : 'Edit Facility',
-              style: const TextStyle(
-                  fontSize: 18,
-                  fontWeight: FontWeight.w700,
-                  color: AppColors.textPrimary),
-            ),
-            const SizedBox(height: 18),
             _field(_name, 'Facility Name', required: true),
             const SizedBox(height: 12),
             _field(_address, 'Address', required: true),
             const SizedBox(height: 12),
-            _field(_desc, 'Description (optional)', maxLines: 2),
-            const SizedBox(height: 20),
-            SizedBox(
-              width: double.infinity,
-              child: ElevatedButton(
-                onPressed: _saving ? null : _save,
-                child: _saving
-                    ? const SizedBox(
-                        height: 18,
-                        width: 18,
-                        child: CircularProgressIndicator(
-                            strokeWidth: 2, color: Colors.white))
-                    : Text(widget.existing == null ? 'Add Facility' : 'Save Changes'),
-              ),
+            _field(_desc, 'Description (optional)', maxLines: 3),
+            const SizedBox(height: 24),
+            ElevatedButton(
+              onPressed: _saving ? null : _save,
+              child: _saving
+                  ? const SizedBox(
+                      height: 18,
+                      width: 18,
+                      child: CircularProgressIndicator(
+                          strokeWidth: 2, color: Colors.white))
+                  : Text(widget.existing == null
+                      ? 'Add Facility'
+                      : 'Save Changes'),
             ),
           ],
         ),

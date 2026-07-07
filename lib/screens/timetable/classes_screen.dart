@@ -36,6 +36,40 @@ class _ClassesScreenState extends State<ClassesScreen> {
     return '${days[d.weekday - 1]}, ${d.day} ${months[d.month - 1]} ${d.year}';
   }
 
+  // Returns true if the class should appear on the given date based on occurrence.
+  bool _matchesDate(ClassModel cls, DateTime date) {
+    switch (cls.occurrence) {
+      case 'daily':
+        return true;
+      case 'once':
+        if (cls.specificDate == null) return false;
+        final parts = cls.specificDate!.split('-');
+        if (parts.length < 3) return false;
+        final d = DateTime(
+            int.parse(parts[0]), int.parse(parts[1]), int.parse(parts[2]));
+        return d.year == date.year &&
+            d.month == date.month &&
+            d.day == date.day;
+      case 'monthly':
+        // Matches if same day-of-week AND same week-of-month as specificDate.
+        if (cls.specificDate == null) {
+          // Fallback: same day of week, first occurrence of month only.
+          return cls.day == _selectedDayName &&
+              date.day <= 7;
+        }
+        final parts = cls.specificDate!.split('-');
+        if (parts.length < 3) return false;
+        final ref = DateTime(
+            int.parse(parts[0]), int.parse(parts[1]), int.parse(parts[2]));
+        final refWeek = ((ref.day - 1) ~/ 7) + 1;
+        final selWeek = ((date.day - 1) ~/ 7) + 1;
+        return cls.day == _selectedDayName && selWeek == refWeek;
+      case 'weekly':
+      default:
+        return cls.day == _selectedDayName;
+    }
+  }
+
   Future<void> _pickDate() async {
     final picked = await showDatePicker(
       context: context,
@@ -271,7 +305,7 @@ class _ClassesScreenState extends State<ClassesScreen> {
                 }
 
                 final classes = snapshot.data!
-                    .where((c) => c.day == _selectedDayName)
+                    .where((c) => _matchesDate(c, _selectedDate))
                     .toList();
 
                 if (classes.isEmpty) {

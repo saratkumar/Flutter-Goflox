@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import '../../utils/app_colors.dart';
 import 'class_management_screen.dart';
 import 'facility_management_screen.dart';
+import 'type_management_screen.dart';
 import 'admin_requests_screen.dart';
 import 'user_management_screen.dart';
 import 'attendance_report_screen.dart';
@@ -34,6 +35,15 @@ class AdminHomeScreen extends StatelessWidget {
             title: 'Facilities',
             subtitle: 'Add and manage gym facilities',
             page: const FacilityManagementScreen(),
+          ),
+          const SizedBox(height: 10),
+          _tile(
+            context,
+            icon: Icons.category_outlined,
+            color: const Color(0xFFFF7043),
+            title: 'Class Types',
+            subtitle: 'Manage types with image auto-mapping',
+            page: const TypeManagementScreen(),
           ),
           const SizedBox(height: 10),
           _tile(

@@ -14,6 +14,10 @@ class ClassModel {
   final String type;
   final String image;
   final bool isActive;
+  // Recurrence: 'weekly' | 'daily' | 'once' | 'monthly'
+  final String occurrence;
+  // Used for 'once' (exact date) and 'monthly' (reference date → week-of-month)
+  final String? specificDate; // format: 'YYYY-MM-DD'
 
   ClassModel({
     this.id,
@@ -29,6 +33,8 @@ class ClassModel {
     required this.type,
     required this.image,
     this.isActive = true,
+    this.occurrence = 'weekly',
+    this.specificDate,
   });
 
   String get effectiveId => id ?? '${day}_${mode}_$startTime';
@@ -49,6 +55,8 @@ class ClassModel {
       type: data['type'] ?? '',
       image: data['image'] ?? '',
       isActive: data['isActive'] ?? true,
+      occurrence: data['occurrence'] ?? 'weekly',
+      specificDate: data['specificDate'],
     );
   }
 
@@ -65,6 +73,8 @@ class ClassModel {
         'type': type,
         'image': image,
         'isActive': isActive,
+        'occurrence': occurrence,
+        if (specificDate != null) 'specificDate': specificDate,
         'updatedAt': FieldValue.serverTimestamp(),
       };
 }

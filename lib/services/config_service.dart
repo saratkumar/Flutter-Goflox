@@ -7,6 +7,8 @@ class ConfigService {
   static const _scriptUrl = 'https://script.google.com/macros/s/AKfycbw2X5iVPGyTJTsV-e3epeOjeIMztjo5s1ZcVWWWqiEQqhz6znHVv_-4wN0kykQl4Adg/exec';
 
   static Map<String, String>? _cache;
+  static List<Map<String, String>>? _facilitiesCache;
+  static List<Map<String, String>>? _typesCache;
 
   static Future<Map<String, String>> _fetch() async {
     if (_cache != null) return _cache!;
@@ -30,10 +32,89 @@ class ConfigService {
     return value;
   }
 
-  static void clearCache() => _cache = null;
+  static void clearCache() {
+    _cache = null;
+    _facilitiesCache = null;
+    _typesCache = null;
+  }
+
+  // ── Facilities ────────────────────────────────────────────────────────────
+
+  static Future<List<Map<String, String>>> getFacilities() async {
+    if (_facilitiesCache != null) return _facilitiesCache!;
+    final uri = Uri.parse(_scriptUrl)
+        .replace(queryParameters: {'action': 'get_facilities'});
+    final response =
+        await http.get(uri).timeout(const Duration(seconds: 10));
+    if (response.statusCode != 200) return [];
+    final data = jsonDecode(response.body);
+    if (data is! List) return [];
+    _facilitiesCache = data
+        .map<Map<String, String>>((e) =>
+            (e as Map).map((k, v) => MapEntry(k.toString(), v.toString())))
+        .toList();
+    return _facilitiesCache!;
+  }
+
+  static Future<void> addFacility(
+      String name, String address, String description) async {
+    await _sheetAction(
+        'add_facility', {'name': name, 'address': address, 'description': description});
+    _facilitiesCache = null;
+  }
+
+  static Future<void> updateFacility(
+      String id, String name, String address, String description) async {
+    await _sheetAction('update_facility',
+        {'id': id, 'name': name, 'address': address, 'description': description});
+    _facilitiesCache = null;
+  }
+
+  static Future<void> deleteFacility(String id) async {
+    await _sheetAction('delete_facility', {'id': id});
+    _facilitiesCache = null;
+  }
+
+  // ── Types ──────────────────────────────────────────────────────────────────
+
+  /// Returns [{name, imageUrl}, …] from the Types sheet.
+  static Future<List<Map<String, String>>> getTypes() async {
+    if (_typesCache != null) return _typesCache!;
+    final uri = Uri.parse(_scriptUrl)
+        .replace(queryParameters: {'action': 'get_types'});
+    final response =
+        await http.get(uri).timeout(const Duration(seconds: 10));
+    if (response.statusCode != 200) return [];
+    final data = jsonDecode(response.body);
+    if (data is! List) return [];
+    _typesCache = data
+        .map<Map<String, String>>((e) =>
+            (e as Map).map((k, v) => MapEntry(k.toString(), v.toString())))
+        .toList();
+    return _typesCache!;
+  }
+
+  static Future<void> addType(String name, String imageUrl) async {
+    await _sheetAction('add_type', {'name': name, 'imageUrl': imageUrl});
+    _typesCache = null;
+  }
+
+  static Future<void> updateType(
+      String originalName, String name, String imageUrl) async {
+    await _sheetAction('update_type',
+        {'originalName': originalName, 'name': name, 'imageUrl': imageUrl});
+    _typesCache = null;
+  }
+
+  static Future<void> deleteType(String name) async {
+    await _sheetAction('delete_type', {'name': name});
+    _typesCache = null;
+  }
 
   // ── Google Sheets class CRUD ──────────────────────────────────────────────
 
+  // fields must include: day, mode, coach, location, groupSize, duration,
+  // detailLocation, startTime, type, image, occurrence, specificDate
   static Future<void> addClass(Map<String, String> fields) =>
       _sheetAction('add_class', fields);
 

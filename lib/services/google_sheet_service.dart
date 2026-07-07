@@ -64,6 +64,11 @@ class GoogleSheetService {
 
       if (row.length < 10) continue;
 
+      final occurrence =
+          row.length > 10 ? row[10].trim() : 'weekly';
+      final specificDate =
+          row.length > 11 ? row[11].trim() : '';
+
       classes.add(
         ClassModel(
           day: row[0].trim(),
@@ -76,6 +81,8 @@ class GoogleSheetService {
           startTime: row[7].trim(),
           type: row[8].trim(),
           image: row[9].trim(),
+          occurrence: occurrence.isEmpty ? 'weekly' : occurrence,
+          specificDate: specificDate.isEmpty ? null : specificDate,
         ),
       );
     }

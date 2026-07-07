@@ -5,6 +5,7 @@ import '../../models/class_model.dart';
 import '../../models/admin_request_model.dart';
 import '../../models/user_model.dart';
 import '../../services/class_service.dart';
+import '../../services/google_sheet_service.dart';
 import '../../services/user_service.dart';
 import '../../utils/app_colors.dart';
 import '../../utils/app_toast.dart';
@@ -16,43 +17,80 @@ class TrainerHomeScreen extends StatefulWidget {
   State<TrainerHomeScreen> createState() => _TrainerHomeScreenState();
 }
 
-class _TrainerHomeScreenState extends State<TrainerHomeScreen>
-    with SingleTickerProviderStateMixin {
-  late TabController _tab;
+class _TrainerHomeScreenState extends State<TrainerHomeScreen> {
   DateTime _selectedDate = DateTime.now();
+  String _trainerName = '';
+  List<ClassModel> _allClasses = [];
+  bool _loading = true;
 
   static const _dayNames = [
-    'Monday', 'Tuesday', 'Wednesday', 'Thursday',
-    'Friday', 'Saturday', 'Sunday',
+    'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday',
   ];
-
-  String get _selectedDayName => _dayNames[_selectedDate.weekday - 1];
 
   @override
   void initState() {
     super.initState();
-    _tab = TabController(length: 2, vsync: this);
+    _loadData();
   }
 
-  @override
-  void dispose() {
-    _tab.dispose();
-    super.dispose();
+  Future<void> _loadData() async {
+    final results = await Future.wait([
+      UserService.getCurrentUser(),
+      GoogleSheetService.getClasses(),
+    ]);
+    if (!mounted) return;
+    setState(() {
+      _trainerName = (results[0] as UserModel?)?.name ?? '';
+      _allClasses = results[1] as List<ClassModel>;
+      _loading = false;
+    });
   }
 
-  String _formatDate(DateTime d) {
-    const months = [
-      'Jan','Feb','Mar','Apr','May','Jun',
-      'Jul','Aug','Sep','Oct','Nov','Dec'
-    ];
-    return '${d.day} ${months[d.month - 1]} ${d.year}';
+  List<ClassModel> get _classesForDate => _allClasses.where((cls) {
+        if (cls.coach.trim().toLowerCase() != _trainerName.trim().toLowerCase()) {
+          return false;
+        }
+        return _matchesDate(cls, _selectedDate);
+      }).toList();
+
+  static bool _matchesDate(ClassModel cls, DateTime date) {
+    final dayName = _dayNames[date.weekday - 1];
+    switch (cls.occurrence) {
+      case 'daily':
+        return true;
+      case 'weekly':
+        return cls.day.split(',').map((d) => d.trim()).contains(dayName);
+      case 'once':
+        final parts = cls.specificDate?.split('-');
+        if (parts?.length != 3) return false;
+        try {
+          final d = DateTime(
+              int.parse(parts![0]), int.parse(parts[1]), int.parse(parts[2]));
+          return d.year == date.year && d.month == date.month && d.day == date.day;
+        } catch (_) {
+          return false;
+        }
+      case 'monthly':
+        if (cls.day != dayName || cls.specificDate == null) return false;
+        final parts = cls.specificDate!.split('-');
+        if (parts.length != 3) return false;
+        try {
+          final ref = DateTime(
+              int.parse(parts[0]), int.parse(parts[1]), int.parse(parts[2]));
+          return ((ref.day - 1) ~/ 7) == ((date.day - 1) ~/ 7);
+        } catch (_) {
+          return false;
+        }
+      default:
+        return cls.day == dayName;
+    }
   }
 
   Future<void> _pickDate() async {
     final picked = await showDatePicker(
       context: context,
       initialDate: _selectedDate,
-      firstDate: DateTime.now().subtract(const Duration(days: 30)),
+      firstDate: DateTime.now().subtract(const Duration(days: 365)),
       lastDate: DateTime.now().add(const Duration(days: 60)),
       builder: (context, child) => Theme(
         data: Theme.of(context).copyWith(
@@ -68,8 +106,9 @@ class _TrainerHomeScreenState extends State<TrainerHomeScreen>
     if (picked != null) setState(() => _selectedDate = picked);
   }
 
-  Future<int> _getEnrollmentCount(String classId) async {
-    return ClassService.getBookingCount(classId, _selectedDate);
+  String _fmt(DateTime d) {
+    const m = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    return '${d.day} ${m[d.month - 1]} ${d.year}';
   }
 
   Future<void> _cancelClass(ClassModel cls) async {
@@ -79,57 +118,47 @@ class _TrainerHomeScreenState extends State<TrainerHomeScreen>
         backgroundColor: AppColors.card,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
         title: const Text('Cancel This Session?',
-            style: TextStyle(
-                color: AppColors.textPrimary, fontWeight: FontWeight.w700)),
+            style: TextStyle(color: AppColors.textPrimary, fontWeight: FontWeight.w700)),
         content: Text(
-          'Cancel ${cls.mode} on ${_formatDate(_selectedDate)}?\n\nAll enrolled clients will be notified and credits refunded.',
+          'Cancel ${cls.mode} on ${_fmt(_selectedDate)}?\n\n'
+          'Enrolled clients will be notified and credits refunded.',
           style: const TextStyle(color: AppColors.textSecondary),
         ),
         actions: [
           TextButton(
-            onPressed: () => Navigator.pop(ctx, false),
-            child: const Text('Keep', style: TextStyle(color: AppColors.primary)),
-          ),
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Keep', style: TextStyle(color: AppColors.primary))),
           ElevatedButton(
-            onPressed: () => Navigator.pop(ctx, true),
-            style: ElevatedButton.styleFrom(
-                backgroundColor: AppColors.error, foregroundColor: Colors.white),
-            child: const Text('Cancel Session'),
-          ),
+              onPressed: () => Navigator.pop(ctx, true),
+              style: ElevatedButton.styleFrom(
+                  backgroundColor: AppColors.error, foregroundColor: Colors.white),
+              child: const Text('Cancel Session')),
         ],
       ),
     );
     if (confirm != true) return;
 
-    // Mark all bookings for this class+date as cancelled and refund credits
-    final startOfDay =
-        DateTime(_selectedDate.year, _selectedDate.month, _selectedDate.day);
-    final endOfDay = startOfDay.add(const Duration(days: 1));
-
-    final bookingsSnap = await FirebaseFirestore.instance
+    final start = DateTime(_selectedDate.year, _selectedDate.month, _selectedDate.day);
+    final end = start.add(const Duration(days: 1));
+    final snap = await FirebaseFirestore.instance
         .collection('bookings')
         .where('classId', isEqualTo: cls.effectiveId)
-        .where('bookingDate',
-            isGreaterThanOrEqualTo: Timestamp.fromDate(startOfDay))
-        .where('bookingDate', isLessThan: Timestamp.fromDate(endOfDay))
+        .where('bookingDate', isGreaterThanOrEqualTo: Timestamp.fromDate(start))
+        .where('bookingDate', isLessThan: Timestamp.fromDate(end))
         .get();
 
     final batch = FirebaseFirestore.instance.batch();
-    for (final doc in bookingsSnap.docs) {
+    for (final doc in snap.docs) {
       batch.update(doc.reference, {'status': 'cancelled_by_trainer'});
-      final userId = doc['userId'] as String?;
-      final creditsUsed = (doc.data()['creditsUsed'] as int?) ?? 1;
-      if (userId != null && creditsUsed > 0) {
-        UserService.addCredits(userId, creditsUsed);
-      }
+      final uid = doc['userId'] as String?;
+      final credits = (doc.data()['creditsUsed'] as int?) ?? 1;
+      if (uid != null && credits > 0) UserService.addCredits(uid, credits);
     }
     await batch.commit();
-
     if (mounted) AppToast.success(context, '${cls.mode} session cancelled');
   }
 
   Future<void> _requestSlotIncrease(ClassModel cls) async {
-    int extraSlots = 1;
     final result = await showDialog<int>(
       context: context,
       builder: (ctx) {
@@ -137,154 +166,121 @@ class _TrainerHomeScreenState extends State<TrainerHomeScreen>
         return StatefulBuilder(
           builder: (ctx, setS) => AlertDialog(
             backgroundColor: AppColors.card,
-            shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(18)),
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
             title: const Text('Request Slot Increase',
-                style: TextStyle(
-                    color: AppColors.textPrimary,
-                    fontWeight: FontWeight.w700)),
+                style: TextStyle(color: AppColors.textPrimary, fontWeight: FontWeight.w700)),
             content: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
                 Text('Current capacity: ${cls.groupSize}',
-                    style:
-                        const TextStyle(color: AppColors.textSecondary)),
+                    style: const TextStyle(color: AppColors.textSecondary)),
                 const SizedBox(height: 16),
                 Row(
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
                     IconButton(
-                      icon: const Icon(Icons.remove_circle_outline),
-                      onPressed: slots > 1
-                          ? () => setS(() => slots--)
-                          : null,
-                    ),
+                        icon: const Icon(Icons.remove_circle_outline),
+                        onPressed: slots > 1 ? () => setS(() => slots--) : null),
                     Text('$slots extra',
-                        style: const TextStyle(
-                            fontSize: 18, fontWeight: FontWeight.w700)),
+                        style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w700)),
                     IconButton(
-                      icon: const Icon(Icons.add_circle_outline,
-                          color: AppColors.primary),
-                      onPressed: () => setS(() => slots++),
-                    ),
+                        icon: const Icon(Icons.add_circle_outline, color: AppColors.primary),
+                        onPressed: () => setS(() => slots++)),
                   ],
                 ),
               ],
             ),
             actions: [
               TextButton(
-                onPressed: () => Navigator.pop(ctx),
-                child: const Text('Cancel',
-                    style: TextStyle(color: AppColors.textMuted)),
-              ),
+                  onPressed: () => Navigator.pop(ctx),
+                  child: const Text('Cancel', style: TextStyle(color: AppColors.textMuted))),
               ElevatedButton(
-                onPressed: () => Navigator.pop(ctx, slots),
-                child: const Text('Send Request'),
-              ),
+                  onPressed: () => Navigator.pop(ctx, slots),
+                  child: const Text('Send Request')),
             ],
           ),
         );
       },
     );
     if (result == null) return;
-    extraSlots = result;
 
     final me = FirebaseAuth.instance.currentUser!;
-    final req = AdminRequestModel(
-      type: 'slot_increase',
-      requestedBy: me.uid,
-      requestedByName: me.displayName ?? me.email ?? '',
-      classId: cls.effectiveId,
-      className: cls.mode,
-      amount: extraSlots,
-      createdAt: DateTime.now(),
+    await FirebaseFirestore.instance.collection('adminRequests').add(
+      AdminRequestModel(
+        type: 'slot_increase',
+        requestedBy: me.uid,
+        requestedByName: me.displayName ?? me.email ?? '',
+        classId: cls.effectiveId,
+        className: cls.mode,
+        amount: result,
+        createdAt: DateTime.now(),
+      ).toFirestore(),
     );
-    await FirebaseFirestore.instance
-        .collection('adminRequests')
-        .add(req.toFirestore());
-
-    if (mounted) {
-      AppToast.success(
-          context, 'Slot increase request sent to admin');
-    }
+    if (mounted) AppToast.success(context, 'Slot increase request sent to admin');
   }
 
   Future<void> _bookForClient(ClassModel cls) async {
     final clients = await UserService.getUsersByRole('client');
     if (!mounted) return;
 
-    final selectedUser = await showDialog<UserModel>(
+    final selected = await showDialog<UserModel>(
       context: context,
       builder: (ctx) => _ClientPickerDialog(clients: clients),
     );
-    if (selectedUser == null) return;
+    if (selected == null) return;
 
-    final hasCredits = await UserService.hasEnoughCredits(selectedUser.uid);
-
+    final hasCredits = await UserService.hasEnoughCredits(selected.uid);
     if (!hasCredits) {
-      // No credits — ask trainer if they want to request admin to add credits
       if (!mounted) return;
-      final requestCredit = await showDialog<bool>(
+      final req = await showDialog<bool>(
         context: context,
         builder: (ctx) => AlertDialog(
           backgroundColor: AppColors.card,
-          shape:
-              RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
           title: const Text('No Credits',
-              style: TextStyle(
-                  color: AppColors.textPrimary,
-                  fontWeight: FontWeight.w700)),
-          content: Text(
-            '${selectedUser.name} has no credits. Request admin to add credits?',
-            style: const TextStyle(color: AppColors.textSecondary),
-          ),
+              style: TextStyle(color: AppColors.textPrimary, fontWeight: FontWeight.w700)),
+          content: Text('${selected.name} has no credits. Request admin to add credits?',
+              style: const TextStyle(color: AppColors.textSecondary)),
           actions: [
             TextButton(
-              onPressed: () => Navigator.pop(ctx, false),
-              child: const Text('Cancel',
-                  style: TextStyle(color: AppColors.textMuted)),
-            ),
+                onPressed: () => Navigator.pop(ctx, false),
+                child: const Text('Cancel', style: TextStyle(color: AppColors.textMuted))),
             ElevatedButton(
-              onPressed: () => Navigator.pop(ctx, true),
-              child: const Text('Request Credits'),
-            ),
+                onPressed: () => Navigator.pop(ctx, true),
+                child: const Text('Request Credits')),
           ],
         ),
       );
-
-      if (requestCredit == true) {
+      if (req == true) {
         final me = FirebaseAuth.instance.currentUser!;
-        final req = AdminRequestModel(
-          type: 'credit_request',
-          requestedBy: me.uid,
-          requestedByName: me.displayName ?? me.email ?? '',
-          targetUserId: selectedUser.uid,
-          targetUserName: selectedUser.name,
-          classId: cls.effectiveId,
-          className: cls.mode,
-          amount: 1,
-          note: 'Trainer booking on behalf of client',
-          createdAt: DateTime.now(),
+        await FirebaseFirestore.instance.collection('adminRequests').add(
+          AdminRequestModel(
+            type: 'credit_request',
+            requestedBy: me.uid,
+            requestedByName: me.displayName ?? me.email ?? '',
+            targetUserId: selected.uid,
+            targetUserName: selected.name,
+            classId: cls.effectiveId,
+            className: cls.mode,
+            amount: 1,
+            note: 'Trainer booking on behalf of client',
+            createdAt: DateTime.now(),
+          ).toFirestore(),
         );
-        await FirebaseFirestore.instance
-            .collection('adminRequests')
-            .add(req.toFirestore());
         if (mounted) {
-          AppToast.info(context,
-              'Credit request sent to admin for ${selectedUser.name}');
+          AppToast.success(context, 'Credit request sent to admin for ${selected.name}');
         }
       }
       return;
     }
 
-    // Has credits — create booking and deduct credit
     final me = FirebaseAuth.instance.currentUser!;
     await FirebaseFirestore.instance.collection('bookings').add({
-      'userId': selectedUser.uid,
+      'userId': selected.uid,
       'classId': cls.effectiveId,
       'displayName': cls.mode,
       'bookingType': 'class',
-      'bookingDay': _selectedDayName,
+      'bookingDay': _dayNames[_selectedDate.weekday - 1],
       'bookingDate': Timestamp.fromDate(_selectedDate),
       'bookingTime': cls.startTime,
       'createdAt': Timestamp.now(),
@@ -292,148 +288,126 @@ class _TrainerHomeScreenState extends State<TrainerHomeScreen>
       'bookedByRole': 'trainer',
       'creditsUsed': 1,
     });
-    await UserService.deductCredit(selectedUser.uid);
-
-    if (mounted) {
-      AppToast.success(
-          context, '${cls.mode} booked for ${selectedUser.name}');
-    }
+    await UserService.deductCredit(selected.uid);
+    if (mounted) AppToast.success(context, '${cls.mode} booked for ${selected.name}');
   }
 
   @override
   Widget build(BuildContext context) {
+    if (_loading) {
+      return const Scaffold(
+          body: Center(child: CircularProgressIndicator(color: AppColors.primary)));
+    }
+
+    final classes = _classesForDate;
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('Trainer Panel'),
-        bottom: TabBar(
-          controller: _tab,
-          indicatorColor: AppColors.primary,
-          labelColor: AppColors.textPrimary,
-          unselectedLabelColor: AppColors.textMuted,
-          tabs: const [
-            Tab(text: 'My Classes'),
-            Tab(text: 'Requests'),
-          ],
-        ),
-      ),
-      body: TabBarView(
-        controller: _tab,
+      body: Column(
         children: [
-          _ClassesTab(
-            selectedDate: _selectedDate,
-            selectedDayName: _selectedDayName,
-            formatDate: _formatDate,
-            onPickDate: _pickDate,
-            getEnrollment: _getEnrollmentCount,
-            onCancel: _cancelClass,
-            onSlotRequest: _requestSlotIncrease,
-            onBookForClient: _bookForClient,
+          _DateBar(date: _selectedDate, fmt: _fmt, onTap: _pickDate),
+          Expanded(
+            child: RefreshIndicator(
+              color: AppColors.primary,
+              onRefresh: _loadData,
+              child: classes.isEmpty
+                  ? ListView(
+                      children: [
+                        SizedBox(
+                          height: 300,
+                          child: Center(
+                            child: Column(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                const Icon(Icons.event_busy,
+                                    size: 48, color: AppColors.textMuted),
+                                const SizedBox(height: 12),
+                                Text(
+                                  'No sessions on ${_dayNames[_selectedDate.weekday - 1]}',
+                                  style: const TextStyle(
+                                      color: AppColors.textSecondary, fontSize: 15),
+                                ),
+                                const SizedBox(height: 8),
+                                if (_trainerName.isEmpty)
+                                  const Text(
+                                    'Profile name not set — contact admin',
+                                    style: TextStyle(fontSize: 12, color: AppColors.error),
+                                    textAlign: TextAlign.center,
+                                  )
+                                else
+                                  Text(
+                                    'Showing classes where coach = "$_trainerName"\n'
+                                    'Make sure this matches exactly in the Classes sheet.',
+                                    style: const TextStyle(
+                                        fontSize: 12, color: AppColors.textMuted),
+                                    textAlign: TextAlign.center,
+                                  ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ],
+                    )
+                  : ListView.builder(
+                      padding: const EdgeInsets.all(14),
+                      itemCount: classes.length,
+                      itemBuilder: (_, i) => _TrainerClassCard(
+                        cls: classes[i],
+                        date: _selectedDate,
+                        getEnrollment: (id) => ClassService.getBookingCount(id, _selectedDate),
+                        onCancel: _cancelClass,
+                        onSlotRequest: _requestSlotIncrease,
+                        onBookForClient: _bookForClient,
+                      ),
+                    ),
+            ),
           ),
-          _MyRequestsTab(),
         ],
       ),
     );
   }
 }
 
-// ── Classes tab ──────────────────────────────────────────────────────────────
+// ── Shared date bar ───────────────────────────────────────────────────────────
 
-class _ClassesTab extends StatelessWidget {
-  final DateTime selectedDate;
-  final String selectedDayName;
-  final String Function(DateTime) formatDate;
-  final VoidCallback onPickDate;
-  final Future<int> Function(String) getEnrollment;
-  final Future<void> Function(ClassModel) onCancel;
-  final Future<void> Function(ClassModel) onSlotRequest;
-  final Future<void> Function(ClassModel) onBookForClient;
-
-  const _ClassesTab({
-    required this.selectedDate,
-    required this.selectedDayName,
-    required this.formatDate,
-    required this.onPickDate,
-    required this.getEnrollment,
-    required this.onCancel,
-    required this.onSlotRequest,
-    required this.onBookForClient,
-  });
+class _DateBar extends StatelessWidget {
+  final DateTime date;
+  final String Function(DateTime) fmt;
+  final VoidCallback onTap;
+  const _DateBar({required this.date, required this.fmt, required this.onTap});
 
   @override
   Widget build(BuildContext context) {
-    return Column(
-      children: [
-        // Date picker bar
-        Container(
-          color: AppColors.bg,
-          padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
-          child: GestureDetector(
-            onTap: onPickDate,
-            child: Container(
-              padding:
-                  const EdgeInsets.symmetric(horizontal: 16, vertical: 13),
-              decoration: BoxDecoration(
-                color: AppColors.card,
-                borderRadius: BorderRadius.circular(12),
-                border: Border.all(
-                    color: AppColors.primary.withValues(alpha: 0.4)),
-              ),
-              child: Row(
-                children: [
-                  const Icon(Icons.calendar_today,
-                      color: AppColors.primary, size: 18),
-                  const SizedBox(width: 12),
-                  Text(formatDate(selectedDate),
-                      style: const TextStyle(
-                          color: AppColors.textPrimary,
-                          fontSize: 15,
-                          fontWeight: FontWeight.w600)),
-                  const Spacer(),
-                  const Icon(Icons.keyboard_arrow_down,
-                      color: AppColors.textSecondary),
-                ],
-              ),
-            ),
+    return Container(
+      color: AppColors.bg,
+      padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
+      child: GestureDetector(
+        onTap: onTap,
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 13),
+          decoration: BoxDecoration(
+            color: AppColors.card,
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: AppColors.primary.withValues(alpha: 0.4)),
+          ),
+          child: Row(
+            children: [
+              const Icon(Icons.calendar_today, color: AppColors.primary, size: 18),
+              const SizedBox(width: 12),
+              Text(fmt(date),
+                  style: const TextStyle(
+                      color: AppColors.textPrimary,
+                      fontSize: 15,
+                      fontWeight: FontWeight.w600)),
+              const Spacer(),
+              const Icon(Icons.keyboard_arrow_down, color: AppColors.textSecondary),
+            ],
           ),
         ),
-        Expanded(
-          child: StreamBuilder<List<ClassModel>>(
-            stream: ClassService.streamClasses(),
-            builder: (context, snap) {
-              if (snap.connectionState == ConnectionState.waiting) {
-                return const Center(
-                    child: CircularProgressIndicator(
-                        color: AppColors.primary));
-              }
-              final all = snap.data ?? [];
-              final classes =
-                  all.where((c) => c.day == selectedDayName).toList();
-              if (classes.isEmpty) {
-                return Center(
-                  child: Text('No classes on $selectedDayName',
-                      style: const TextStyle(
-                          color: AppColors.textSecondary)),
-                );
-              }
-              return ListView.builder(
-                padding: const EdgeInsets.all(14),
-                itemCount: classes.length,
-                itemBuilder: (context, i) => _TrainerClassCard(
-                  cls: classes[i],
-                  date: selectedDate,
-                  getEnrollment: getEnrollment,
-                  onCancel: onCancel,
-                  onSlotRequest: onSlotRequest,
-                  onBookForClient: onBookForClient,
-                ),
-              );
-            },
-          ),
-        ),
-      ],
+      ),
     );
   }
 }
+
+// ── Trainer class card ────────────────────────────────────────────────────────
 
 class _TrainerClassCard extends StatelessWidget {
   final ClassModel cls;
@@ -476,65 +450,48 @@ class _TrainerClassCard extends StatelessWidget {
                         color: AppColors.textPrimary)),
               ),
               Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
                 decoration: BoxDecoration(
                   color: AppColors.primary.withValues(alpha: 0.12),
                   borderRadius: BorderRadius.circular(20),
                 ),
                 child: Text(cls.type,
                     style: const TextStyle(
-                        fontSize: 11,
-                        color: AppColors.primary,
-                        fontWeight: FontWeight.w600)),
+                        fontSize: 11, color: AppColors.primary, fontWeight: FontWeight.w600)),
               ),
             ],
           ),
           const SizedBox(height: 8),
           _info(Icons.schedule, '${cls.startTime} · ${cls.duration}'),
-          _info(Icons.location_on_outlined,
-              '${cls.location} · ${cls.detailLocation}'),
+          _info(Icons.location_on_outlined, '${cls.location} · ${cls.detailLocation}'),
           const SizedBox(height: 12),
           FutureBuilder<int>(
             future: getEnrollment(cls.effectiveId),
             builder: (context, snap) {
               final enrolled = snap.data ?? 0;
-              final isFull = capacity > 0 && enrolled >= capacity;
-              return Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
+              final full = capacity > 0 && enrolled >= capacity;
+              return Row(
                 children: [
-                  Row(
-                    children: [
-                      const Icon(Icons.people_outline,
-                          size: 15, color: AppColors.textMuted),
-                      const SizedBox(width: 6),
-                      Text(
-                        '$enrolled / $capacity enrolled',
-                        style: TextStyle(
-                            fontSize: 13,
-                            color: isFull
-                                ? AppColors.error
-                                : AppColors.textSecondary,
-                            fontWeight: FontWeight.w600),
+                  const Icon(Icons.people_outline, size: 15, color: AppColors.textMuted),
+                  const SizedBox(width: 6),
+                  Text('$enrolled / $capacity enrolled',
+                      style: TextStyle(
+                          fontSize: 13,
+                          color: full ? AppColors.error : AppColors.textSecondary,
+                          fontWeight: FontWeight.w600)),
+                  if (full) ...[
+                    const SizedBox(width: 6),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                      decoration: BoxDecoration(
+                        color: AppColors.error.withValues(alpha: 0.12),
+                        borderRadius: BorderRadius.circular(8),
                       ),
-                      if (isFull) ...[
-                        const SizedBox(width: 6),
-                        Container(
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 8, vertical: 2),
-                          decoration: BoxDecoration(
-                            color: AppColors.error.withValues(alpha: 0.12),
-                            borderRadius: BorderRadius.circular(8),
-                          ),
-                          child: const Text('FULL',
-                              style: TextStyle(
-                                  fontSize: 10,
-                                  color: AppColors.error,
-                                  fontWeight: FontWeight.w700)),
-                        ),
-                      ],
-                    ],
-                  ),
+                      child: const Text('FULL',
+                          style: TextStyle(
+                              fontSize: 10, color: AppColors.error, fontWeight: FontWeight.w700)),
+                    ),
+                  ],
                 ],
               );
             },
@@ -544,24 +501,12 @@ class _TrainerClassCard extends StatelessWidget {
             spacing: 8,
             runSpacing: 8,
             children: [
-              _actionButton(
-                Icons.person_add_outlined,
-                'Book for Client',
-                AppColors.primary,
-                () => onBookForClient(cls),
-              ),
-              _actionButton(
-                Icons.add_box_outlined,
-                'Request More Slots',
-                const Color(0xFF00D4AA),
-                () => onSlotRequest(cls),
-              ),
-              _actionButton(
-                Icons.cancel_outlined,
-                'Cancel Session',
-                AppColors.error,
-                () => onCancel(cls),
-              ),
+              _btn(Icons.person_add_outlined, 'Book for Client', AppColors.primary,
+                  () => onBookForClient(cls)),
+              _btn(Icons.add_box_outlined, 'More Slots', const Color(0xFF00D4AA),
+                  () => onSlotRequest(cls)),
+              _btn(Icons.cancel_outlined, 'Cancel', AppColors.error,
+                  () => onCancel(cls)),
             ],
           ),
         ],
@@ -569,133 +514,33 @@ class _TrainerClassCard extends StatelessWidget {
     );
   }
 
-  Widget _info(IconData icon, String text) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 4),
-      child: Row(
-        children: [
-          Icon(icon, size: 14, color: AppColors.textMuted),
-          const SizedBox(width: 6),
-          Expanded(
-            child: Text(text,
-                style: const TextStyle(
-                    fontSize: 12, color: AppColors.textSecondary)),
-          ),
-        ],
-      ),
-    );
-  }
+  Widget _info(IconData icon, String text) => Padding(
+        padding: const EdgeInsets.only(bottom: 4),
+        child: Row(
+          children: [
+            Icon(icon, size: 14, color: AppColors.textMuted),
+            const SizedBox(width: 6),
+            Expanded(
+                child: Text(text,
+                    style: const TextStyle(fontSize: 12, color: AppColors.textSecondary))),
+          ],
+        ),
+      );
 
-  Widget _actionButton(
-      IconData icon, String label, Color color, VoidCallback onTap) {
-    return OutlinedButton.icon(
-      onPressed: onTap,
-      icon: Icon(icon, size: 14, color: color),
-      label: Text(label, style: TextStyle(color: color, fontSize: 12)),
-      style: OutlinedButton.styleFrom(
-        side: BorderSide(color: color.withValues(alpha: 0.5)),
-        padding:
-            const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-        shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(10)),
-      ),
-    );
-  }
+  Widget _btn(IconData icon, String label, Color color, VoidCallback onTap) =>
+      OutlinedButton.icon(
+        onPressed: onTap,
+        icon: Icon(icon, size: 14, color: color),
+        label: Text(label, style: TextStyle(color: color, fontSize: 12)),
+        style: OutlinedButton.styleFrom(
+          side: BorderSide(color: color.withValues(alpha: 0.5)),
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+        ),
+      );
 }
 
-// ── My Requests tab ─────────────────────────────────────────────────────────
-
-class _MyRequestsTab extends StatelessWidget {
-  @override
-  Widget build(BuildContext context) {
-    final uid = FirebaseAuth.instance.currentUser?.uid ?? '';
-    return StreamBuilder<QuerySnapshot>(
-      stream: FirebaseFirestore.instance
-          .collection('adminRequests')
-          .where('requestedBy', isEqualTo: uid)
-          .orderBy('createdAt', descending: true)
-          .snapshots(),
-      builder: (context, snap) {
-        if (snap.connectionState == ConnectionState.waiting) {
-          return const Center(
-              child: CircularProgressIndicator(color: AppColors.primary));
-        }
-        final docs = snap.data?.docs ?? [];
-        if (docs.isEmpty) {
-          return const Center(
-            child: Text('No requests yet',
-                style: TextStyle(color: AppColors.textSecondary)),
-          );
-        }
-        return ListView.builder(
-          padding: const EdgeInsets.all(14),
-          itemCount: docs.length,
-          itemBuilder: (context, i) {
-            final data = docs[i].data() as Map<String, dynamic>;
-            final type = data['type'] ?? '';
-            final status = data['status'] ?? 'pending';
-            final statusColor = status == 'approved'
-                ? const Color(0xFF00D4AA)
-                : status == 'rejected'
-                    ? AppColors.error
-                    : const Color(0xFFFFAB40);
-
-            return Container(
-              margin: const EdgeInsets.only(bottom: 10),
-              padding: const EdgeInsets.all(14),
-              decoration: BoxDecoration(
-                color: AppColors.card,
-                borderRadius: BorderRadius.circular(14),
-                border: Border.all(color: AppColors.divider),
-              ),
-              child: Row(
-                children: [
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          type == 'credit_request'
-                              ? 'Credit Request — ${data['targetUserName'] ?? ''}'
-                              : 'Slot Increase — ${data['className'] ?? ''}',
-                          style: const TextStyle(
-                              fontWeight: FontWeight.w700,
-                              color: AppColors.textPrimary),
-                        ),
-                        const SizedBox(height: 4),
-                        Text('+${data['amount']} ${type == 'credit_request' ? 'credits' : 'slots'}',
-                            style: const TextStyle(
-                                fontSize: 12,
-                                color: AppColors.textSecondary)),
-                      ],
-                    ),
-                  ),
-                  Container(
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 10, vertical: 4),
-                    decoration: BoxDecoration(
-                      color: statusColor.withValues(alpha: 0.15),
-                      borderRadius: BorderRadius.circular(20),
-                    ),
-                    child: Text(
-                      status.toUpperCase(),
-                      style: TextStyle(
-                          fontSize: 10,
-                          color: statusColor,
-                          fontWeight: FontWeight.w700),
-                    ),
-                  ),
-                ],
-              ),
-            );
-          },
-        );
-      },
-    );
-  }
-}
-
-// ── Client picker dialog ─────────────────────────────────────────────────────
+// ── Client picker dialog ──────────────────────────────────────────────────────
 
 class _ClientPickerDialog extends StatefulWidget {
   final List<UserModel> clients;
@@ -718,11 +563,9 @@ class _ClientPickerDialogState extends State<_ClientPickerDialog> {
 
     return AlertDialog(
       backgroundColor: AppColors.card,
-      shape:
-          RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
       title: const Text('Select Client',
-          style: TextStyle(
-              color: AppColors.textPrimary, fontWeight: FontWeight.w700)),
+          style: TextStyle(color: AppColors.textPrimary, fontWeight: FontWeight.w700)),
       content: SizedBox(
         width: double.maxFinite,
         height: 350,
@@ -733,37 +576,32 @@ class _ClientPickerDialogState extends State<_ClientPickerDialog> {
               decoration: InputDecoration(
                 hintText: 'Search client...',
                 prefixIcon: const Icon(Icons.search, size: 18),
-                contentPadding: const EdgeInsets.symmetric(
-                    horizontal: 12, vertical: 10),
-                border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(10)),
+                contentPadding:
+                    const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
               ),
             ),
             const SizedBox(height: 10),
             Expanded(
               child: ListView.builder(
                 itemCount: filtered.length,
-                itemBuilder: (_, i) {
-                  final c = filtered[i];
-                  return ListTile(
-                    leading: CircleAvatar(
-                      backgroundColor:
-                          AppColors.primary.withValues(alpha: 0.15),
-                      child: Text(c.name.isNotEmpty ? c.name[0] : '?',
-                          style: const TextStyle(
-                              color: AppColors.primary,
-                              fontWeight: FontWeight.w700)),
+                itemBuilder: (_, i) => ListTile(
+                  leading: CircleAvatar(
+                    backgroundColor: AppColors.primary.withValues(alpha: 0.15),
+                    child: Text(
+                      filtered[i].name.isNotEmpty ? filtered[i].name[0] : '?',
+                      style: const TextStyle(
+                          color: AppColors.primary, fontWeight: FontWeight.w700),
                     ),
-                    title: Text(c.name,
-                        style: const TextStyle(
-                            fontWeight: FontWeight.w600,
-                            color: AppColors.textPrimary)),
-                    subtitle: Text('${c.credits} credits',
-                        style: const TextStyle(
-                            fontSize: 12, color: AppColors.textSecondary)),
-                    onTap: () => Navigator.pop(context, c),
-                  );
-                },
+                  ),
+                  title: Text(filtered[i].name,
+                      style: const TextStyle(
+                          fontWeight: FontWeight.w600, color: AppColors.textPrimary)),
+                  subtitle: Text('${filtered[i].credits} credits',
+                      style: const TextStyle(
+                          fontSize: 12, color: AppColors.textSecondary)),
+                  onTap: () => Navigator.pop(context, filtered[i]),
+                ),
               ),
             ),
           ],
@@ -772,8 +610,7 @@ class _ClientPickerDialogState extends State<_ClientPickerDialog> {
       actions: [
         TextButton(
           onPressed: () => Navigator.pop(context),
-          child: const Text('Cancel',
-              style: TextStyle(color: AppColors.textMuted)),
+          child: const Text('Cancel', style: TextStyle(color: AppColors.textMuted)),
         ),
       ],
     );

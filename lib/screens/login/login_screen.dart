@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:google_sign_in/google_sign_in.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import '../../services/user_service.dart';
 import '../../utils/app_colors.dart';
 
 class LoginScreen extends StatefulWidget {
@@ -43,17 +44,31 @@ class _LoginScreenState extends State<LoginScreen> {
       final existing = await userRef.get();
 
       if (!existing.exists) {
-        // First-ever login for this account — assign role
+        // Check for an admin-created invitation for this email
+        final invite = await UserService.consumeInvitation(email);
         final isSuperAdmin = _superAdminEmails.contains(email);
+
+        final role = isSuperAdmin
+            ? 'admin'
+            : (invite?['role'] as String? ?? 'client');
+        final adminLevel = isSuperAdmin
+            ? 'super_admin'
+            : (invite?['adminLevel'] as String?);
+
         await userRef.set({
           'email': email,
-          'name': result.user!.displayName ?? '',
+          'name': (invite?['name'] as String?)?.isNotEmpty == true
+              ? invite!['name']
+              : result.user!.displayName ?? '',
           'photoUrl': result.user!.photoURL ?? '',
-          'role': isSuperAdmin ? 'admin' : 'client',
-          if (isSuperAdmin) 'adminLevel': 'super_admin',
-          if (isSuperAdmin)
-            'adminPermissions': <String>[],
-          'credits': 0,
+          if ((invite?['phone'] as String?)?.isNotEmpty == true)
+            'phone': invite!['phone'],
+          'role': role,
+          if (adminLevel != null) 'adminLevel': adminLevel,
+          'adminPermissions': <String>[],
+          'credits': isSuperAdmin
+              ? 0
+              : (invite?['initialCredits'] as int? ?? 0),
           'memberships': <Map<String, dynamic>>[],
         });
       } else {

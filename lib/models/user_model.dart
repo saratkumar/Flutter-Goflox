@@ -41,6 +41,7 @@ class UserModel {
   final String email;
   final String name;
   final String? photoUrl;
+  final String? phone;
   final String role; // 'client', 'trainer', 'admin'
   final String? adminLevel; // 'super_admin', 'admin' — only for admin role
   final List<String> adminPermissions;
@@ -52,6 +53,7 @@ class UserModel {
     required this.email,
     required this.name,
     this.photoUrl,
+    this.phone,
     this.role = 'client',
     this.adminLevel,
     this.adminPermissions = const [],
@@ -84,6 +86,7 @@ class UserModel {
       email: data['email'] ?? '',
       name: data['name'] ?? '',
       photoUrl: data['photoUrl'],
+      phone: data['phone'],
       role: data['role'] ?? 'client',
       adminLevel: data['adminLevel'],
       adminPermissions: List<String>.from(data['adminPermissions'] ?? []),
@@ -98,6 +101,7 @@ class UserModel {
         'email': email,
         'name': name,
         if (photoUrl != null) 'photoUrl': photoUrl,
+        if (phone != null && phone!.isNotEmpty) 'phone': phone,
         'role': role,
         if (adminLevel != null) 'adminLevel': adminLevel,
         'adminPermissions': adminPermissions,
