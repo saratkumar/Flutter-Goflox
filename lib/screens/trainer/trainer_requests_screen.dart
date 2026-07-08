@@ -11,31 +11,41 @@ class TrainerRequestsScreen extends StatelessWidget {
     final uid = FirebaseAuth.instance.currentUser?.uid ?? '';
     return Scaffold(
       body: StreamBuilder<QuerySnapshot>(
+        // No orderBy with where — composite index required; sort in Dart instead
         stream: FirebaseFirestore.instance
             .collection('adminRequests')
             .where('requestedBy', isEqualTo: uid)
-            .orderBy('createdAt', descending: true)
             .snapshots(),
         builder: (context, snap) {
-          if (snap.connectionState == ConnectionState.waiting) {
+          if (snap.connectionState == ConnectionState.waiting && !snap.hasData) {
             return const Center(
                 child: CircularProgressIndicator(color: AppColors.primary));
           }
-          final docs = snap.data?.docs ?? [];
+          final raw = snap.data?.docs ?? [];
+          final docs = List.of(raw)
+            ..sort((a, b) {
+              final ta =
+                  (a['createdAt'] as Timestamp?)?.millisecondsSinceEpoch ?? 0;
+              final tb =
+                  (b['createdAt'] as Timestamp?)?.millisecondsSinceEpoch ?? 0;
+              return tb.compareTo(ta);
+            });
           if (docs.isEmpty) {
             return const Center(
               child: Column(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  Icon(Icons.inbox_outlined, size: 56, color: AppColors.textMuted),
+                  Icon(Icons.inbox_outlined,
+                      size: 56, color: AppColors.textMuted),
                   SizedBox(height: 14),
                   Text('No requests yet',
-                      style:
-                          TextStyle(color: AppColors.textSecondary, fontSize: 15)),
+                      style: TextStyle(
+                          color: AppColors.textSecondary, fontSize: 15)),
                   SizedBox(height: 6),
                   Text(
-                    'Slot increase and credit requests\nwill appear here.',
-                    style: TextStyle(color: AppColors.textMuted, fontSize: 13),
+                    'Slot increase, credit, and\ncancellation requests will appear here.',
+                    style:
+                        TextStyle(color: AppColors.textMuted, fontSize: 13),
                     textAlign: TextAlign.center,
                   ),
                 ],
@@ -47,21 +57,75 @@ class TrainerRequestsScreen extends StatelessWidget {
             itemCount: docs.length,
             itemBuilder: (_, i) {
               final data = docs[i].data() as Map<String, dynamic>;
-              final type = data['type'] ?? '';
-              final status = data['status'] ?? 'pending';
-              final statusColor = status == 'approved'
-                  ? const Color(0xFF00D4AA)
-                  : status == 'rejected'
-                      ? AppColors.error
-                      : const Color(0xFFFFAB40);
+              final type = data['type'] as String? ?? '';
+              final status = data['status'] as String? ?? 'pending';
 
+              // Status colour — approved_cancel and reassigned both count as resolved
+              final Color statusColor;
+              switch (status) {
+                case 'approved':
+                case 'approved_cancel':
+                case 'reassigned':
+                  statusColor = const Color(0xFF00D4AA);
+                case 'rejected':
+                  statusColor = AppColors.error;
+                default:
+                  statusColor = const Color(0xFFFFAB40);
+              }
+
+              // Human-readable status badge text
+              final String statusLabel;
+              switch (status) {
+                case 'approved_cancel':
+                  statusLabel = 'CANCELLED';
+                case 'reassigned':
+                  statusLabel = 'REASSIGNED';
+                default:
+                  statusLabel = status.toUpperCase();
+              }
+
+              // Request-submitted date (createdAt)
               final createdAt = data['createdAt'];
-              String dateStr = '';
+              String submittedStr = '';
               if (createdAt is Timestamp) {
                 final d = createdAt.toDate();
-                const months = ['Jan','Feb','Mar','Apr','May','Jun',
-                                 'Jul','Aug','Sep','Oct','Nov','Dec'];
-                dateStr = '${d.day} ${months[d.month - 1]} ${d.year}';
+                const months = [
+                  'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+                  'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'
+                ];
+                submittedStr = '${d.day} ${months[d.month - 1]} ${d.year}';
+              }
+
+              // Icon + title + subtitle vary by type
+              final IconData typeIcon;
+              final String title;
+              final String subtitle;
+              switch (type) {
+                case 'session_cancel':
+                  typeIcon = Icons.cancel_outlined;
+                  title =
+                      'Cancel Session — ${data['className'] ?? ''}';
+                  final sessionDate =
+                      data['sessionDate'] as String? ?? '';
+                  final newTrainer =
+                      data['newTrainer'] as String?;
+                  if (status == 'reassigned' && newTrainer != null) {
+                    subtitle = 'Reassigned to $newTrainer'
+                        '${sessionDate.isNotEmpty ? ' • $sessionDate' : ''}';
+                  } else {
+                    subtitle = sessionDate.isNotEmpty
+                        ? 'Session date: $sessionDate'
+                        : 'Pending admin review';
+                  }
+                case 'credit_request':
+                  typeIcon = Icons.toll_outlined;
+                  title =
+                      'Credit Request — ${data['targetUserName'] ?? ''}';
+                  subtitle = '+${data['amount']} credits';
+                default:
+                  typeIcon = Icons.add_box_outlined;
+                  title = 'Slot Increase — ${data['className'] ?? ''}';
+                  subtitle = '+${data['amount']} slots';
               }
 
               return Container(
@@ -74,7 +138,7 @@ class TrainerRequestsScreen extends StatelessWidget {
                 ),
                 child: Row(
                   children: [
-                    // Type icon
+                    // Icon pill
                     Container(
                       width: 42,
                       height: 42,
@@ -82,13 +146,7 @@ class TrainerRequestsScreen extends StatelessWidget {
                         color: statusColor.withValues(alpha: 0.1),
                         borderRadius: BorderRadius.circular(10),
                       ),
-                      child: Icon(
-                        type == 'credit_request'
-                            ? Icons.toll_outlined
-                            : Icons.add_box_outlined,
-                        color: statusColor,
-                        size: 20,
-                      ),
+                      child: Icon(typeIcon, color: statusColor, size: 20),
                     ),
                     const SizedBox(width: 12),
                     Expanded(
@@ -96,28 +154,25 @@ class TrainerRequestsScreen extends StatelessWidget {
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Text(
-                            type == 'credit_request'
-                                ? 'Credit Request — ${data['targetUserName'] ?? ''}'
-                                : 'Slot Increase — ${data['className'] ?? ''}',
+                            title,
                             style: const TextStyle(
                                 fontWeight: FontWeight.w700,
                                 color: AppColors.textPrimary,
                                 fontSize: 14),
                           ),
                           const SizedBox(height: 3),
-                          Text(
-                            '+${data['amount']} '
-                            '${type == 'credit_request' ? 'credits' : 'slots'}',
-                            style: const TextStyle(
-                                fontSize: 12, color: AppColors.textSecondary),
-                          ),
-                          if (dateStr.isNotEmpty) ...[
+                          Text(subtitle,
+                              style: const TextStyle(
+                                  fontSize: 12,
+                                  color: AppColors.textSecondary)),
+                          if (submittedStr.isNotEmpty) ...[
                             const SizedBox(height: 2),
-                            Text(dateStr,
+                            Text('Submitted $submittedStr',
                                 style: const TextStyle(
-                                    fontSize: 11, color: AppColors.textMuted)),
+                                    fontSize: 11,
+                                    color: AppColors.textMuted)),
                           ],
-                          if ((data['note'] ?? '').isNotEmpty) ...[
+                          if ((data['note'] as String? ?? '').isNotEmpty) ...[
                             const SizedBox(height: 2),
                             Text(data['note'],
                                 style: const TextStyle(
@@ -130,14 +185,14 @@ class TrainerRequestsScreen extends StatelessWidget {
                     ),
                     // Status badge
                     Container(
-                      padding:
-                          const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 10, vertical: 4),
                       decoration: BoxDecoration(
                         color: statusColor.withValues(alpha: 0.15),
                         borderRadius: BorderRadius.circular(20),
                       ),
                       child: Text(
-                        status.toUpperCase(),
+                        statusLabel,
                         style: TextStyle(
                             fontSize: 10,
                             color: statusColor,

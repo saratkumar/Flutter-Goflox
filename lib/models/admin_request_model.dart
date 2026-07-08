@@ -2,19 +2,21 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 
 class AdminRequestModel {
   final String? id;
-  final String type; // 'credit_request', 'slot_increase'
+  final String type; // 'credit_request' | 'slot_increase' | 'session_cancel'
   final String requestedBy;
   final String requestedByName;
   final String? targetUserId;
   final String? targetUserName;
   final String? classId;
   final String? className;
-  final int amount; // credits or additional slots
-  final String status; // 'pending', 'approved', 'rejected'
+  final String? sessionDate; // 'YYYY-MM-DD' — used for session_cancel
+  final int amount; // credits or additional slots (0 for session_cancel)
+  final String status; // 'pending' | 'approved' | 'rejected' | 'approved_cancel' | 'reassigned'
   final String note;
   final DateTime createdAt;
   final DateTime? resolvedAt;
   final String? resolvedBy;
+  final String? newTrainer; // set when status == 'reassigned'
 
   AdminRequestModel({
     this.id,
@@ -25,12 +27,14 @@ class AdminRequestModel {
     this.targetUserName,
     this.classId,
     this.className,
+    this.sessionDate,
     required this.amount,
     this.status = 'pending',
     this.note = '',
     required this.createdAt,
     this.resolvedAt,
     this.resolvedBy,
+    this.newTrainer,
   });
 
   factory AdminRequestModel.fromFirestore(DocumentSnapshot doc) {
@@ -44,12 +48,14 @@ class AdminRequestModel {
       targetUserName: data['targetUserName'],
       classId: data['classId'],
       className: data['className'],
+      sessionDate: data['sessionDate'],
       amount: data['amount'] ?? 0,
       status: data['status'] ?? 'pending',
       note: data['note'] ?? '',
       createdAt: (data['createdAt'] as Timestamp).toDate(),
       resolvedAt: (data['resolvedAt'] as Timestamp?)?.toDate(),
       resolvedBy: data['resolvedBy'],
+      newTrainer: data['newTrainer'],
     );
   }
 
@@ -61,11 +67,13 @@ class AdminRequestModel {
         if (targetUserName != null) 'targetUserName': targetUserName,
         if (classId != null) 'classId': classId,
         if (className != null) 'className': className,
+        if (sessionDate != null) 'sessionDate': sessionDate,
         'amount': amount,
         'status': status,
         'note': note,
         'createdAt': Timestamp.fromDate(createdAt),
         if (resolvedAt != null) 'resolvedAt': Timestamp.fromDate(resolvedAt!),
         if (resolvedBy != null) 'resolvedBy': resolvedBy,
+        if (newTrainer != null) 'newTrainer': newTrainer,
       };
 }

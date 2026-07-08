@@ -141,9 +141,24 @@ class ConfigService {
         .replace(queryParameters: {'action': 'get_transactions'});
     final response =
         await http.get(uri).timeout(const Duration(seconds: 15));
-    if (response.statusCode != 200) return [];
-    final data = jsonDecode(response.body);
-    if (data is! List) return [];
+    if (response.statusCode != 200) {
+      throw Exception('HTTP ${response.statusCode}: ${response.body}');
+    }
+    dynamic data;
+    try {
+      data = jsonDecode(response.body);
+    } catch (_) {
+      throw Exception(
+          'Response is not JSON. Body: ${response.body.substring(0, response.body.length.clamp(0, 200))}');
+    }
+    // Accept plain array OR {data: [...]} / {records: [...]} wrapper
+    if (data is Map) {
+      data = data['data'] ?? data['records'] ?? data['rows'];
+    }
+    if (data is! List) {
+      throw Exception(
+          'Unexpected response shape from Apps Script: ${response.body.substring(0, response.body.length.clamp(0, 300))}');
+    }
     return data
         .map<Map<String, String>>((e) =>
             (e as Map).map((k, v) => MapEntry(k.toString(), v.toString())))

@@ -29,36 +29,44 @@ class _TrainerHistoryScreenState extends State<TrainerHistoryScreen> {
   }
 
   Future<void> _loadData() async {
-    final results = await Future.wait([
-      UserService.getCurrentUser(),
-      ClassService.getClasses(),
-    ]);
-    if (!mounted) return;
+    try {
+      final results = await Future.wait([
+        UserService.getCurrentUser(),
+        ClassService.getClasses(),
+      ]);
+      if (!mounted) return;
 
-    final trainer = results[0] as UserModel?;
-    final allClasses = results[1] as List<ClassModel>;
-    final name = trainer?.name ?? '';
+      final trainer = results[0] as UserModel?;
+      final allClasses = results[1] as List<ClassModel>;
+      final name = trainer?.name ?? '';
 
-    // Build sessions: every date in the past 60 days where this trainer had a class
-    final today = DateTime.now();
-    final past = <_Session>[];
-    for (int i = 1; i <= 60; i++) {
-      final date = DateTime(today.year, today.month, today.day)
-          .subtract(Duration(days: i));
-      for (final cls in allClasses) {
-        if (cls.coach.trim().toLowerCase() != name.trim().toLowerCase()) continue;
-        if (_matchesDate(cls, date)) {
-          past.add(_Session(cls: cls, date: date));
+      // Build sessions: every date in the past 60 days where this trainer had a class
+      final today = DateTime.now();
+      final past = <_Session>[];
+      for (int i = 1; i <= 60; i++) {
+        final date = DateTime(today.year, today.month, today.day)
+            .subtract(Duration(days: i));
+        for (final cls in allClasses) {
+          if (cls.coach.trim().toLowerCase() != name.trim().toLowerCase()) continue;
+          if (_matchesDate(cls, date)) {
+            // A once-off class deactivated by admin cancel = cancelled session
+            final isCancelled = cls.isCancelledOn(date) ||
+                (cls.occurrence == 'once' && !cls.isActive);
+            past.add(_Session(cls: cls, date: date, isCancelled: isCancelled));
+          }
         }
       }
-    }
 
-    if (!mounted) return;
-    setState(() {
-      _trainerName = name;
-      _sessions = past;
-      _loading = false;
-    });
+      if (!mounted) return;
+      setState(() {
+        _trainerName = name;
+        _sessions = past;
+        _loading = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _loading = false);
+    }
   }
 
   static bool _matchesDate(ClassModel cls, DateTime date) {
@@ -151,7 +159,8 @@ class _TrainerHistoryScreenState extends State<TrainerHistoryScreen> {
 class _Session {
   final ClassModel cls;
   final DateTime date;
-  const _Session({required this.cls, required this.date});
+  final bool isCancelled;
+  const _Session({required this.cls, required this.date, this.isCancelled = false});
 }
 
 // ── Session card ──────────────────────────────────────────────────────────────
@@ -164,13 +173,20 @@ class _SessionCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final cls = session.cls;
+    final cancelled = session.isCancelled;
+    final chipColor = cancelled ? AppColors.error : AppColors.primary;
+
     return Container(
       margin: const EdgeInsets.only(bottom: 10),
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
         color: AppColors.card,
         borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: AppColors.divider),
+        border: Border.all(
+          color: cancelled
+              ? AppColors.error.withValues(alpha: 0.35)
+              : AppColors.divider,
+        ),
       ),
       child: Row(
         children: [
@@ -179,25 +195,25 @@ class _SessionCard extends StatelessWidget {
             width: 52,
             padding: const EdgeInsets.symmetric(vertical: 8),
             decoration: BoxDecoration(
-              color: AppColors.primary.withValues(alpha: 0.1),
+              color: chipColor.withValues(alpha: 0.1),
               borderRadius: BorderRadius.circular(10),
             ),
             child: Column(
               children: [
                 Text(
                   session.date.day.toString(),
-                  style: const TextStyle(
+                  style: TextStyle(
                       fontSize: 18,
                       fontWeight: FontWeight.w800,
-                      color: AppColors.primary),
+                      color: chipColor),
                 ),
                 Text(
                   ['Jan','Feb','Mar','Apr','May','Jun',
                    'Jul','Aug','Sep','Oct','Nov','Dec'][session.date.month - 1],
-                  style: const TextStyle(
+                  style: TextStyle(
                       fontSize: 10,
                       fontWeight: FontWeight.w600,
-                      color: AppColors.primary),
+                      color: chipColor),
                 ),
               ],
             ),
@@ -207,11 +223,37 @@ class _SessionCard extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(cls.mode,
-                    style: const TextStyle(
-                        fontSize: 14,
-                        fontWeight: FontWeight.w700,
-                        color: AppColors.textPrimary)),
+                Row(
+                  children: [
+                    Expanded(
+                      child: Text(cls.mode,
+                          style: TextStyle(
+                              fontSize: 14,
+                              fontWeight: FontWeight.w700,
+                              color: cancelled
+                                  ? AppColors.textMuted
+                                  : AppColors.textPrimary,
+                              decoration: cancelled
+                                  ? TextDecoration.lineThrough
+                                  : null)),
+                    ),
+                    if (cancelled)
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 8, vertical: 3),
+                        decoration: BoxDecoration(
+                          color: AppColors.error.withValues(alpha: 0.12),
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: const Text('CANCELLED',
+                            style: TextStyle(
+                                fontSize: 9,
+                                color: AppColors.error,
+                                fontWeight: FontWeight.w700,
+                                letterSpacing: 0.5)),
+                      ),
+                  ],
+                ),
                 const SizedBox(height: 3),
                 Text('${cls.startTime} · ${cls.duration} · ${cls.location}',
                     style: const TextStyle(fontSize: 12, color: AppColors.textSecondary)),
@@ -221,56 +263,75 @@ class _SessionCard extends StatelessWidget {
               ],
             ),
           ),
-          // Enrollment badge (from Firestore) — filter by date in Dart to avoid composite index
-          FutureBuilder<QuerySnapshot>(
-            future: FirebaseFirestore.instance
-                .collection('bookings')
-                .where('classId', isEqualTo: cls.effectiveId)
-                .get(),
-            builder: (_, snap) {
-              final start = DateTime(
-                  session.date.year, session.date.month, session.date.day);
-              final end = start.add(const Duration(days: 1));
-              final count = snap.data?.docs.where((d) {
-                    if (d['status'] == 'cancelled_by_trainer') return false;
-                    final bd = d['bookingDate'];
-                    if (bd == null) return false;
-                    final dt = (bd as Timestamp).toDate();
-                    return !dt.isBefore(start) && dt.isBefore(end);
-                  }).length ??
-                  0;
-              return Container(
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                decoration: BoxDecoration(
-                  color: count > 0
-                      ? const Color(0xFF00D4AA).withValues(alpha: 0.12)
-                      : AppColors.surface,
-                  borderRadius: BorderRadius.circular(10),
-                ),
-                child: Column(
-                  children: [
-                    Text(
-                      '$count',
-                      style: TextStyle(
-                          fontSize: 18,
-                          fontWeight: FontWeight.w800,
-                          color: count > 0
-                              ? const Color(0xFF00D4AA)
-                              : AppColors.textMuted),
-                    ),
-                    Text(
-                      'attended',
-                      style: TextStyle(
-                          fontSize: 9,
-                          color: count > 0
-                              ? const Color(0xFF00D4AA)
-                              : AppColors.textMuted),
-                    ),
-                  ],
-                ),
-              );
-            },
-          ),
+          // Enrollment badge — skip query for cancelled sessions
+          if (cancelled)
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+              decoration: BoxDecoration(
+                color: AppColors.error.withValues(alpha: 0.08),
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: const Column(
+                children: [
+                  Icon(Icons.cancel_outlined,
+                      size: 18, color: AppColors.error),
+                  SizedBox(height: 2),
+                  Text('cancelled',
+                      style: TextStyle(fontSize: 9, color: AppColors.error)),
+                ],
+              ),
+            )
+          else
+            FutureBuilder<QuerySnapshot>(
+              future: FirebaseFirestore.instance
+                  .collection('bookings')
+                  .where('classId', isEqualTo: cls.effectiveId)
+                  .get(),
+              builder: (_, snap) {
+                final start = DateTime(
+                    session.date.year, session.date.month, session.date.day);
+                final end = start.add(const Duration(days: 1));
+                final count = snap.data?.docs.where((d) {
+                      if (d['status'] == 'cancelled_by_trainer') return false;
+                      final bd = d['bookingDate'];
+                      if (bd == null) return false;
+                      final dt = (bd as Timestamp).toDate();
+                      return !dt.isBefore(start) && dt.isBefore(end);
+                    }).length ??
+                    0;
+                return Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                  decoration: BoxDecoration(
+                    color: count > 0
+                        ? const Color(0xFF00D4AA).withValues(alpha: 0.12)
+                        : AppColors.surface,
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: Column(
+                    children: [
+                      Text(
+                        '$count',
+                        style: TextStyle(
+                            fontSize: 18,
+                            fontWeight: FontWeight.w800,
+                            color: count > 0
+                                ? const Color(0xFF00D4AA)
+                                : AppColors.textMuted),
+                      ),
+                      Text(
+                        'attended',
+                        style: TextStyle(
+                            fontSize: 9,
+                            color: count > 0
+                                ? const Color(0xFF00D4AA)
+                                : AppColors.textMuted),
+                      ),
+                    ],
+                  ),
+                );
+              },
+            ),
         ],
       ),
     );

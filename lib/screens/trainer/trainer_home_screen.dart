@@ -117,50 +117,57 @@ class _TrainerHomeScreenState extends State<TrainerHomeScreen> {
       builder: (ctx) => AlertDialog(
         backgroundColor: AppColors.card,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
-        title: const Text('Cancel This Session?',
+        title: const Text('Request Session Cancellation?',
             style: TextStyle(color: AppColors.textPrimary, fontWeight: FontWeight.w700)),
         content: Text(
-          'Cancel ${cls.mode} on ${_fmt(_selectedDate)}?\n\n'
-          'Enrolled clients will be notified and credits refunded.',
+          'Send a cancellation request to admin for ${cls.mode} on ${_fmt(_selectedDate)}?\n\n'
+          'Admin will approve the cancellation (clients refunded) or reassign another trainer.',
           style: const TextStyle(color: AppColors.textSecondary),
         ),
         actions: [
           TextButton(
               onPressed: () => Navigator.pop(ctx, false),
-              child: const Text('Keep', style: TextStyle(color: AppColors.primary))),
+              child: const Text('Back', style: TextStyle(color: AppColors.primary))),
           ElevatedButton(
               onPressed: () => Navigator.pop(ctx, true),
               style: ElevatedButton.styleFrom(
                   backgroundColor: AppColors.error, foregroundColor: Colors.white),
-              child: const Text('Cancel Session')),
+              child: const Text('Send Request')),
         ],
       ),
     );
     if (confirm != true) return;
 
-    final start = DateTime(_selectedDate.year, _selectedDate.month, _selectedDate.day);
-    final end = start.add(const Duration(days: 1));
-    // Query by classId only — filter date in Dart to avoid composite index
-    final allSnap = await FirebaseFirestore.instance
-        .collection('bookings')
-        .where('classId', isEqualTo: cls.effectiveId)
-        .get();
-    final todayDocs = allSnap.docs.where((d) {
-      final bd = d['bookingDate'];
-      if (bd == null) return false;
-      final dt = (bd as Timestamp).toDate();
-      return !dt.isBefore(start) && dt.isBefore(end);
-    }).toList();
+    try {
+      final me = FirebaseAuth.instance.currentUser!;
+      final d = _selectedDate;
+      final dateStr =
+          '${d.year}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
 
-    final batch = FirebaseFirestore.instance.batch();
-    for (final doc in todayDocs) {
-      batch.update(doc.reference, {'status': 'cancelled_by_trainer'});
-      final uid = doc['userId'] as String?;
-      final credits = (doc.data()['creditsUsed'] as int?) ?? 1;
-      if (uid != null && credits > 0) UserService.addCredits(uid, credits);
+      await FirebaseFirestore.instance.collection('adminRequests').add(
+        AdminRequestModel(
+          type: 'session_cancel',
+          requestedBy: me.uid,
+          requestedByName:
+              _trainerName.isNotEmpty ? _trainerName : (me.displayName ?? me.email ?? ''),
+          classId: cls.effectiveId,
+          className: cls.mode,
+          sessionDate: dateStr,
+          amount: 0,
+          note: 'Trainer requested cancellation of ${cls.mode} on $dateStr',
+          createdAt: DateTime.now(),
+        ).toFirestore(),
+      );
+
+      await NotificationService.showNewAdminRequest('session_cancel');
+
+      if (mounted) {
+        AppToast.success(context, 'Cancellation request sent to admin for approval');
+      }
+    } catch (e, st) {
+      debugPrint('_cancelClass error: $e\n$st');
+      if (mounted) AppToast.error(context, 'Request failed: ${e.toString()}');
     }
-    await batch.commit();
-    if (mounted) AppToast.success(context, '${cls.mode} session cancelled');
   }
 
   Future<void> _requestSlotIncrease(ClassModel cls) async {
@@ -210,6 +217,9 @@ class _TrainerHomeScreenState extends State<TrainerHomeScreen> {
     if (result == null) return;
 
     final me = FirebaseAuth.instance.currentUser!;
+    final d = _selectedDate;
+    final dateStr =
+        '${d.year}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
     await FirebaseFirestore.instance.collection('adminRequests').add(
       AdminRequestModel(
         type: 'slot_increase',
@@ -217,7 +227,9 @@ class _TrainerHomeScreenState extends State<TrainerHomeScreen> {
         requestedByName: me.displayName ?? me.email ?? '',
         classId: cls.effectiveId,
         className: cls.mode,
+        sessionDate: dateStr,
         amount: result,
+        note: 'Extra slots requested for ${cls.mode} on $dateStr',
         createdAt: DateTime.now(),
       ).toFirestore(),
     );

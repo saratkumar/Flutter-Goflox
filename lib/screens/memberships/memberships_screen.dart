@@ -335,7 +335,12 @@ class _ActivePlanRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final daysLeft = entry.endDate.difference(DateTime.now()).inDays;
+    // Compare date boundaries only so time-of-day doesn't skew the count
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final endDay = DateTime(
+        entry.endDate.year, entry.endDate.month, entry.endDate.day);
+    final daysLeft = endDay.difference(today).inDays;
     return Container(
       margin: const EdgeInsets.only(top: 6),
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),

@@ -42,10 +42,48 @@ class NotificationService {
     priority: Priority.high,
   );
 
+  static Future<void> showTrainerAssigned(String className, String date) async {
+    await notifications.show(
+      DateTime.now().millisecondsSinceEpoch.remainder(100000),
+      'Session Assigned to You',
+      '$className${date.isNotEmpty ? ' on $date' : ''} — check your schedule',
+      const NotificationDetails(android: _adminChannel),
+    );
+  }
+
+  static Future<void> showTrainerRemoved(String className) async {
+    await notifications.show(
+      DateTime.now().millisecondsSinceEpoch.remainder(100000),
+      'Session Reassigned',
+      'You have been removed from $className — another trainer has been assigned',
+      const NotificationDetails(android: _adminChannel),
+    );
+  }
+
+  static Future<void> showSessionCancelApproved(String className) async {
+    await notifications.show(
+      DateTime.now().millisecondsSinceEpoch.remainder(100000),
+      'Session Cancelled',
+      '$className session was cancelled — your credit has been refunded',
+      const NotificationDetails(android: _confirmChannel),
+    );
+  }
+
+  static Future<void> showSessionCancelled(String className) async {
+    await notifications.show(
+      DateTime.now().millisecondsSinceEpoch.remainder(100000),
+      'Session Cancelled',
+      '$className has been cancelled — your credit has been refunded',
+      const NotificationDetails(android: _adminChannel),
+    );
+  }
+
   static Future<void> showNewAdminRequest(String requestType) async {
     final title = requestType == 'slot_increase'
         ? 'New Slot Increase Request'
-        : 'New Credit Request';
+        : requestType == 'session_cancel'
+            ? 'Session Cancellation Request'
+            : 'New Credit Request';
     await notifications.show(
       DateTime.now().millisecondsSinceEpoch.remainder(100000),
       title,

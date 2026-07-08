@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import '../../models/class_model.dart';
 import '../../models/user_model.dart';
 import '../../services/class_service.dart';
+import '../../services/notifications.dart';
 import '../../utils/app_colors.dart';
 import '../../utils/app_toast.dart';
 
@@ -396,8 +397,18 @@ class _ClassFormScreenState extends State<_ClassFormScreen> {
     );
 
     try {
-      if (widget.existing?.id != null) {
+      final isEdit = widget.existing?.id != null;
+      final oldCoach = widget.existing?.coach ?? '';
+      final coachChanged = isEdit && oldCoach != coachName && oldCoach.isNotEmpty;
+
+      if (isEdit) {
         await ClassService.updateClass(widget.existing!.id!, cls);
+        if (coachChanged) {
+          await Future.wait([
+            NotificationService.showTrainerRemoved(cls.mode),
+            NotificationService.showTrainerAssigned(cls.mode, 'all upcoming sessions'),
+          ]);
+        }
       } else {
         await ClassService.createClass(cls);
       }

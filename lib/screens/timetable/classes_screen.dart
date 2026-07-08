@@ -135,7 +135,7 @@ class _ClassesScreenState extends State<ClassesScreen> {
         return;
       }
 
-      final capacity = int.tryParse(cls.groupSize) ?? 0;
+      final capacity = cls.effectiveCapacity(_selectedDate);
       if (capacity > 0 && booked >= capacity) {
         if (context.mounted) {
           AppToast.error(context, "Class is full");
@@ -314,7 +314,10 @@ class _ClassesScreenState extends State<ClassesScreen> {
                 }
                 final all = snapshot.data ?? [];
                 final classes = all
-                    .where((c) => _matchesDate(c, _selectedDate))
+                    .where((c) =>
+                        c.isActive &&
+                        _matchesDate(c, _selectedDate) &&
+                        !c.isCancelledOn(_selectedDate))
                     .toList();
 
                 if (classes.isEmpty) {
@@ -487,7 +490,7 @@ class _ClassCard extends StatelessWidget {
                 const SizedBox(height: 14),
                 _CapacitySection(
                   classId: item.effectiveId,
-                  groupSize: item.groupSize,
+                  groupSize: item.effectiveCapacity(selectedDate).toString(),
                   selectedDate: selectedDate,
                   onBook: onBook,
                   onJoinWaitingList: onJoinWaitingList,
@@ -576,6 +579,7 @@ class _CapacitySectionState extends State<_CapacitySection> {
         final allDocs = snap.data?.docs ?? [];
         final currentUid = FirebaseAuth.instance.currentUser?.uid ?? '';
         final todayDocs = allDocs.where((d) {
+          if (d['status'] == 'cancelled_by_trainer') return false;
           final bd = d['bookingDate'];
           if (bd == null) return false;
           final dt = (bd as Timestamp).toDate();

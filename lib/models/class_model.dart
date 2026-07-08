@@ -18,6 +18,11 @@ class ClassModel {
   final String occurrence;
   // Used for 'once' (exact date) and 'monthly' (reference date → week-of-month)
   final String? specificDate; // format: 'YYYY-MM-DD'
+  // Dates where this session was cancelled (YYYY-MM-DD strings)
+  final List<String> cancelledDates;
+  // Per-session capacity overrides: 'YYYY-MM-DD' → total capacity for that day
+  // Populated when admin approves a slot-increase request for a specific session
+  final Map<String, int> sessionSlotOverrides;
 
   ClassModel({
     this.id,
@@ -35,12 +40,39 @@ class ClassModel {
     this.isActive = true,
     this.occurrence = 'weekly',
     this.specificDate,
+    this.cancelledDates = const [],
+    this.sessionSlotOverrides = const {},
   });
 
   String get effectiveId => id ?? '${day}_${mode}_$startTime';
 
+  /// Returns effective capacity for [date], respecting per-session overrides.
+  int effectiveCapacity(DateTime date) {
+    final key = _dateKey(date);
+    return sessionSlotOverrides[key] ?? (int.tryParse(groupSize) ?? 0);
+  }
+
+  /// Returns true if [date]'s session was cancelled.
+  bool isCancelledOn(DateTime date) => cancelledDates.contains(_dateKey(date));
+
+  static String _dateKey(DateTime d) =>
+      '${d.year}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
+
   factory ClassModel.fromFirestore(DocumentSnapshot doc) {
     final data = doc.data() as Map<String, dynamic>;
+    // Parse cancelledDates — stored as List<String> in Firestore
+    final rawCancelled = data['cancelledDates'];
+    final cancelledDates = rawCancelled is List
+        ? rawCancelled.map((e) => e.toString()).toList()
+        : <String>[];
+    // Parse sessionSlotOverrides — stored as Map<String, int> in Firestore
+    final rawOverrides = data['sessionSlotOverrides'];
+    final sessionSlotOverrides = <String, int>{};
+    if (rawOverrides is Map) {
+      rawOverrides.forEach((k, v) {
+        if (k is String && v is int) sessionSlotOverrides[k] = v;
+      });
+    }
     return ClassModel(
       id: doc.id,
       day: data['day'] ?? '',
@@ -57,6 +89,8 @@ class ClassModel {
       isActive: data['isActive'] ?? true,
       occurrence: data['occurrence'] ?? 'weekly',
       specificDate: data['specificDate'],
+      cancelledDates: cancelledDates,
+      sessionSlotOverrides: sessionSlotOverrides,
     );
   }
 
@@ -75,6 +109,8 @@ class ClassModel {
         'isActive': isActive,
         'occurrence': occurrence,
         if (specificDate != null) 'specificDate': specificDate,
+        // cancelledDates and sessionSlotOverrides are managed via targeted
+        // Firestore arrayUnion / field updates — never overwrite them here
         'updatedAt': FieldValue.serverTimestamp(),
       };
 }

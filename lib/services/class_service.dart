@@ -51,6 +51,13 @@ class ClassService {
     });
   }
 
+  static Future<void> updateCoach(String id, String coachName) async {
+    await _col.doc(id).update({
+      'coach': coachName,
+      'updatedAt': FieldValue.serverTimestamp(),
+    });
+  }
+
   static Future<int> getBookingCount(String classId, DateTime date) async {
     // Query by classId only — filter by date in Dart to avoid composite index requirement
     final snap = await FirebaseFirestore.instance
@@ -60,6 +67,7 @@ class ClassService {
     final start = DateTime(date.year, date.month, date.day);
     final end = start.add(const Duration(days: 1));
     return snap.docs.where((d) {
+      if (d['status'] == 'cancelled_by_trainer') return false;
       final bd = d['bookingDate'];
       if (bd == null) return false;
       final dt = (bd as Timestamp).toDate();

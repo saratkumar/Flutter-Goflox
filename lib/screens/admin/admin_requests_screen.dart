@@ -2,8 +2,10 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import '../../models/admin_request_model.dart';
+import '../../models/user_model.dart';
 import '../../services/user_service.dart';
 import '../../services/class_service.dart';
+import '../../services/notifications.dart';
 import '../../utils/app_colors.dart';
 import '../../utils/app_toast.dart';
 
@@ -65,8 +67,7 @@ class _RequestList extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // When filtering by status, skip orderBy to avoid a composite index —
-    // sort by createdAt in Dart instead.
+    // When filtering by status, skip orderBy to avoid composite index — sort in Dart
     final stream = statusFilter != null
         ? FirebaseFirestore.instance
             .collection('adminRequests')
@@ -115,18 +116,322 @@ class _RequestList extends StatelessWidget {
   }
 }
 
-class _RequestCard extends StatelessWidget {
+// ── Request card ──────────────────────────────────────────────────────────────
+
+class _RequestCard extends StatefulWidget {
   final AdminRequestModel request;
   const _RequestCard({required this.request});
 
   @override
+  State<_RequestCard> createState() => _RequestCardState();
+}
+
+class _RequestCardState extends State<_RequestCard> {
+  bool _processing = false;
+
+  AdminRequestModel get req => widget.request;
+
+  // ── Helpers ────────────────────────────────────────────────────────────────
+
+  Color get _statusColor {
+    switch (req.status) {
+      case 'approved':
+      case 'approved_cancel':
+      case 'reassigned':
+        return const Color(0xFF00D4AA);
+      case 'rejected':
+        return AppColors.error;
+      default:
+        return const Color(0xFFFFAB40);
+    }
+  }
+
+  String get _statusLabel {
+    switch (req.status) {
+      case 'approved_cancel':
+        return 'CANCELLED';
+      case 'reassigned':
+        return 'REASSIGNED';
+      default:
+        return req.status.toUpperCase();
+    }
+  }
+
+  String get _typeLabel {
+    switch (req.type) {
+      case 'credit_request':
+        return 'Credit Request';
+      case 'session_cancel':
+        return 'Session Cancellation Request';
+      default:
+        return 'Slot Increase Request';
+    }
+  }
+
+  // ── Standard approve / reject (credit_request & slot_increase) ────────────
+
+  Future<void> _resolve(bool approved) async {
+    setState(() => _processing = true);
+    try {
+      final adminUid = FirebaseAuth.instance.currentUser?.uid ?? '';
+      await FirebaseFirestore.instance
+          .collection('adminRequests')
+          .doc(req.id)
+          .update({
+        'status': approved ? 'approved' : 'rejected',
+        'resolvedAt': Timestamp.now(),
+        'resolvedBy': adminUid,
+      });
+
+      if (approved) {
+        if (req.type == 'credit_request' && req.targetUserId != null) {
+          await UserService.addCredits(req.targetUserId!, req.amount);
+        } else if (req.type == 'slot_increase' && req.classId != null) {
+          final cls = await ClassService.getClass(req.classId!);
+          if (cls != null) {
+            final sessionDate = req.sessionDate;
+            if (sessionDate != null) {
+              // Temporary override — does NOT change the permanent groupSize
+              final newCap =
+                  (int.tryParse(cls.groupSize) ?? 0) + req.amount;
+              await FirebaseFirestore.instance
+                  .collection('classes')
+                  .doc(req.classId)
+                  .update({'sessionSlotOverrides.$sessionDate': newCap});
+              // Log it
+              await FirebaseFirestore.instance
+                  .collection('sessionLogs')
+                  .add({
+                'type': 'slot_override',
+                'classId': req.classId,
+                'className': req.className ?? '',
+                'sessionDate': sessionDate,
+                'extraSlots': req.amount,
+                'newCapacity': newCap,
+                'requestId': req.id,
+                'requestedBy': req.requestedByName,
+                'createdAt': Timestamp.now(),
+              });
+            } else {
+              // Legacy request without sessionDate — still do permanent update
+              await ClassService.updateGroupSize(
+                  req.classId!, (int.tryParse(cls.groupSize) ?? 0) + req.amount);
+            }
+          }
+        }
+      }
+
+      if (mounted) {
+        AppToast.success(context, approved ? 'Request approved' : 'Request rejected');
+      }
+    } catch (e) {
+      if (mounted) AppToast.error(context, 'Failed: ${e.toString()}');
+    } finally {
+      if (mounted) setState(() => _processing = false);
+    }
+  }
+
+  // ── Approve cancellation (session_cancel) ─────────────────────────────────
+
+  Future<void> _approveSessionCancel() async {
+    setState(() => _processing = true);
+    try {
+      final adminUid = FirebaseAuth.instance.currentUser?.uid ?? '';
+
+      if (req.classId != null && req.sessionDate != null) {
+        final parts = req.sessionDate!.split('-');
+        if (parts.length == 3) {
+          final date = DateTime(
+              int.parse(parts[0]), int.parse(parts[1]), int.parse(parts[2]));
+          final end = date.add(const Duration(days: 1));
+
+          // Fetch all bookings for the class, filter session date in Dart
+          final allSnap = await FirebaseFirestore.instance
+              .collection('bookings')
+              .where('classId', isEqualTo: req.classId)
+              .get();
+          final sessionDocs = allSnap.docs.where((d) {
+            if (d['status'] == 'cancelled_by_trainer') return false;
+            final bd = d['bookingDate'];
+            if (bd == null) return false;
+            final dt = (bd as Timestamp).toDate();
+            return !dt.isBefore(date) && dt.isBefore(end);
+          }).toList();
+
+          // Mark bookings cancelled
+          final batch = FirebaseFirestore.instance.batch();
+          for (final doc in sessionDocs) {
+            batch.update(doc.reference, {'status': 'cancelled_by_trainer'});
+          }
+          await batch.commit();
+
+          // Refund credits in parallel
+          final refunds = <Future>[];
+          for (final doc in sessionDocs) {
+            final uid = doc['userId'] as String?;
+            final credits = doc['creditsUsed'] as int? ?? 1;
+            if (uid != null && credits > 0) {
+              refunds.add(UserService.addCredits(uid, credits));
+            }
+          }
+          if (refunds.isNotEmpty) await Future.wait(refunds);
+
+          // Notify clients
+          if (sessionDocs.isNotEmpty) {
+            await NotificationService.showSessionCancelApproved(
+                req.className ?? 'session');
+          }
+        }
+      }
+
+      // Mark the session date as cancelled on the class document
+      if (req.classId != null && req.sessionDate != null) {
+        // Fetch class to check occurrence type
+        final clsSnap = await FirebaseFirestore.instance
+            .collection('classes')
+            .doc(req.classId)
+            .get();
+        final isOnce = (clsSnap.data()?['occurrence'] as String?) == 'once';
+
+        await FirebaseFirestore.instance
+            .collection('classes')
+            .doc(req.classId)
+            .update(isOnce
+                // One-off class: deactivate entirely so it disappears everywhere
+                ? {'isActive': false, 'updatedAt': FieldValue.serverTimestamp()}
+                // Recurring class: only block that specific date
+                : {
+                    'cancelledDates':
+                        FieldValue.arrayUnion([req.sessionDate]),
+                    'updatedAt': FieldValue.serverTimestamp(),
+                  });
+
+        // Write audit log
+        await FirebaseFirestore.instance.collection('sessionLogs').add({
+          'type': 'session_cancelled',
+          'classId': req.classId,
+          'className': req.className ?? '',
+          'coach': req.requestedByName,
+          'sessionDate': req.sessionDate,
+          'cancelledAt': Timestamp.now(),
+          'cancelledBy': adminUid,
+          'reason': 'trainer_request',
+          'requestId': req.id,
+          'classDeactivated': isOnce,
+        });
+      }
+
+      await FirebaseFirestore.instance
+          .collection('adminRequests')
+          .doc(req.id)
+          .update({
+        'status': 'approved_cancel',
+        'resolvedAt': Timestamp.now(),
+        'resolvedBy': adminUid,
+      });
+
+      if (mounted) {
+        AppToast.success(
+            context, 'Cancellation approved — bookings cancelled & credits refunded');
+      }
+    } catch (e, st) {
+      debugPrint('_approveSessionCancel: $e\n$st');
+      if (mounted) AppToast.error(context, 'Failed: ${e.toString()}');
+    } finally {
+      if (mounted) setState(() => _processing = false);
+    }
+  }
+
+  // ── Reassign trainer (session_cancel) ─────────────────────────────────────
+
+  Future<void> _reassignTrainer() async {
+    // Load coaches then show picker
+    List<UserModel> coaches;
+    try {
+      coaches = await ClassService.getCoaches();
+    } catch (e) {
+      if (mounted) AppToast.error(context, 'Could not load trainers');
+      return;
+    }
+    if (!mounted) return;
+
+    final selected = await showDialog<UserModel>(
+      context: context,
+      builder: (ctx) => _TrainerPickerDialog(
+        coaches: coaches,
+        currentCoach: req.requestedByName,
+      ),
+    );
+    if (selected == null || !mounted) return;
+
+    setState(() => _processing = true);
+    try {
+      final adminUid = FirebaseAuth.instance.currentUser?.uid ?? '';
+
+      // Update class coach permanently
+      if (req.classId != null) {
+        await ClassService.updateCoach(req.classId!, selected.name);
+      }
+
+      // Notify old trainer they've been removed
+      await NotificationService.showTrainerRemoved(req.className ?? '');
+      // Notify new trainer they've been assigned
+      await NotificationService.showTrainerAssigned(
+          req.className ?? '', req.sessionDate ?? '');
+
+      // Mark request resolved
+      await FirebaseFirestore.instance
+          .collection('adminRequests')
+          .doc(req.id)
+          .update({
+        'status': 'reassigned',
+        'resolvedAt': Timestamp.now(),
+        'resolvedBy': adminUid,
+        'newTrainer': selected.name,
+      });
+
+      if (mounted) {
+        AppToast.success(context, 'Session reassigned to ${selected.name}');
+      }
+    } catch (e, st) {
+      debugPrint('_reassignTrainer: $e\n$st');
+      if (mounted) AppToast.error(context, 'Failed: ${e.toString()}');
+    } finally {
+      if (mounted) setState(() => _processing = false);
+    }
+  }
+
+  // ── Info row helper ────────────────────────────────────────────────────────
+
+  Widget _info(String label, String value) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 3),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(
+            width: 120,
+            child: Text('$label:',
+                style: const TextStyle(fontSize: 12, color: AppColors.textMuted)),
+          ),
+          Expanded(
+            child: Text(value,
+                style: const TextStyle(
+                    fontSize: 12,
+                    color: AppColors.textPrimary,
+                    fontWeight: FontWeight.w600)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ── Build ──────────────────────────────────────────────────────────────────
+
+  @override
   Widget build(BuildContext context) {
-    final isPending = request.status == 'pending';
-    final statusColor = request.status == 'approved'
-        ? const Color(0xFF00D4AA)
-        : request.status == 'rejected'
-            ? AppColors.error
-            : const Color(0xFFFFAB40);
+    final isPending = req.status == 'pending';
+    final isSessionCancel = req.type == 'session_cancel';
 
     return Container(
       margin: const EdgeInsets.only(bottom: 12),
@@ -142,13 +447,12 @@ class _RequestCard extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          // Title + status badge
           Row(
             children: [
               Expanded(
                 child: Text(
-                  request.type == 'credit_request'
-                      ? 'Credit Request'
-                      : 'Slot Increase Request',
+                  _typeLabel,
                   style: const TextStyle(
                       fontSize: 15,
                       fontWeight: FontWeight.w700,
@@ -156,131 +460,182 @@ class _RequestCard extends StatelessWidget {
                 ),
               ),
               Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
                 decoration: BoxDecoration(
-                  color: statusColor.withValues(alpha: 0.15),
+                  color: _statusColor.withValues(alpha: 0.15),
                   borderRadius: BorderRadius.circular(20),
                 ),
                 child: Text(
-                  request.status.toUpperCase(),
+                  _statusLabel,
                   style: TextStyle(
                       fontSize: 10,
-                      color: statusColor,
+                      color: _statusColor,
                       fontWeight: FontWeight.w700),
                 ),
               ),
             ],
           ),
           const SizedBox(height: 10),
-          if (request.type == 'credit_request') ...[
-            _info('Trainer', request.requestedByName),
-            _info('Client', request.targetUserName ?? '—'),
-            _info('Credits requested', '${request.amount}'),
+
+          // Info rows — vary by type
+          if (isSessionCancel) ...[
+            _info('Trainer', req.requestedByName),
+            _info('Class', req.className ?? '—'),
+            _info('Session Date', req.sessionDate ?? '—'),
+            if (req.newTrainer != null) _info('New Trainer', req.newTrainer!),
+          ] else if (req.type == 'credit_request') ...[
+            _info('Trainer', req.requestedByName),
+            _info('Client', req.targetUserName ?? '—'),
+            _info('Credits requested', '${req.amount}'),
           ] else ...[
-            _info('Trainer', request.requestedByName),
-            _info('Class', request.className ?? '—'),
-            _info('Extra slots requested', '${request.amount}'),
+            _info('Trainer', req.requestedByName),
+            _info('Class', req.className ?? '—'),
+            _info('Extra slots requested', '${req.amount}'),
           ],
-          if (request.note.isNotEmpty) ...[
-            const SizedBox(height: 6),
-            _info('Note', request.note),
+
+          if (req.note.isNotEmpty) ...[
+            const SizedBox(height: 3),
+            _info('Note', req.note),
           ],
+
+          // Action buttons — only for pending requests
           if (isPending) ...[
             const SizedBox(height: 14),
-            Row(
-              children: [
-                Expanded(
-                  child: OutlinedButton(
-                    onPressed: () => _resolve(context, false),
-                    style: OutlinedButton.styleFrom(
-                      foregroundColor: AppColors.error,
-                      side: BorderSide(
-                          color: AppColors.error.withValues(alpha: 0.5)),
-                      shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(10)),
+            if (_processing)
+              const Center(
+                  child: SizedBox(
+                      height: 24,
+                      width: 24,
+                      child: CircularProgressIndicator(
+                          strokeWidth: 2, color: AppColors.primary)))
+            else if (isSessionCancel)
+              Row(
+                children: [
+                  Expanded(
+                    child: OutlinedButton(
+                      onPressed: _approveSessionCancel,
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: const Color(0xFF00D4AA),
+                        side: const BorderSide(color: Color(0xFF00D4AA)),
+                        shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(10)),
+                      ),
+                      child: const Text('Approve Cancel'),
                     ),
-                    child: const Text('Reject'),
                   ),
-                ),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: ElevatedButton(
-                    onPressed: () => _resolve(context, true),
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: const Color(0xFF00D4AA),
-                      foregroundColor: Colors.white,
-                      shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(10)),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: ElevatedButton(
+                      onPressed: _reassignTrainer,
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: AppColors.primary,
+                        foregroundColor: Colors.white,
+                        shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(10)),
+                      ),
+                      child: const Text('Reassign Trainer'),
                     ),
-                    child: const Text('Approve'),
                   ),
-                ),
-              ],
-            ),
+                ],
+              )
+            else
+              Row(
+                children: [
+                  Expanded(
+                    child: OutlinedButton(
+                      onPressed: () => _resolve(false),
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: AppColors.error,
+                        side: BorderSide(
+                            color: AppColors.error.withValues(alpha: 0.5)),
+                        shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(10)),
+                      ),
+                      child: const Text('Reject'),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: ElevatedButton(
+                      onPressed: () => _resolve(true),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: const Color(0xFF00D4AA),
+                        foregroundColor: Colors.white,
+                        shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(10)),
+                      ),
+                      child: const Text('Approve'),
+                    ),
+                  ),
+                ],
+              ),
           ],
         ],
       ),
     );
   }
+}
 
-  Widget _info(String label, String value) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 3),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          SizedBox(
-            width: 120,
-            child: Text('$label:',
-                style: const TextStyle(
-                    fontSize: 12, color: AppColors.textMuted)),
-          ),
-          Expanded(
-            child: Text(value,
-                style: const TextStyle(
-                    fontSize: 12,
-                    color: AppColors.textPrimary,
-                    fontWeight: FontWeight.w600)),
-          ),
-        ],
+// ── Trainer picker dialog ─────────────────────────────────────────────────────
+
+class _TrainerPickerDialog extends StatelessWidget {
+  final List<UserModel> coaches;
+  final String currentCoach;
+
+  const _TrainerPickerDialog(
+      {required this.coaches, required this.currentCoach});
+
+  @override
+  Widget build(BuildContext context) {
+    final available =
+        coaches.where((c) => c.name != currentCoach).toList();
+
+    return AlertDialog(
+      backgroundColor: AppColors.card,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+      title: const Text('Assign New Trainer',
+          style: TextStyle(
+              color: AppColors.textPrimary, fontWeight: FontWeight.w700)),
+      content: SizedBox(
+        width: double.maxFinite,
+        child: available.isEmpty
+            ? const Padding(
+                padding: EdgeInsets.symmetric(vertical: 16),
+                child: Text('No other trainers available.',
+                    style: TextStyle(color: AppColors.textSecondary)),
+              )
+            : ListView.separated(
+                shrinkWrap: true,
+                itemCount: available.length,
+                separatorBuilder: (_, __) =>
+                    const Divider(height: 1, color: AppColors.divider),
+                itemBuilder: (ctx, i) {
+                  final coach = available[i];
+                  return ListTile(
+                    leading: const CircleAvatar(
+                      backgroundColor: Color(0xFF1A1A2E),
+                      child: Icon(Icons.person_outline,
+                          color: AppColors.primary, size: 20),
+                    ),
+                    title: Text(coach.name,
+                        style: const TextStyle(
+                            color: AppColors.textPrimary,
+                            fontWeight: FontWeight.w600)),
+                    subtitle: Text(coach.role,
+                        style: const TextStyle(
+                            color: AppColors.textMuted, fontSize: 12)),
+                    onTap: () => Navigator.pop(ctx, coach),
+                  );
+                },
+              ),
       ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Cancel',
+              style: TextStyle(color: AppColors.textMuted)),
+        ),
+      ],
     );
-  }
-
-  Future<void> _resolve(BuildContext context, bool approved) async {
-    final adminUid = FirebaseAuth.instance.currentUser?.uid ?? '';
-
-    final update = <String, dynamic>{
-      'status': approved ? 'approved' : 'rejected',
-      'resolvedAt': Timestamp.now(),
-      'resolvedBy': adminUid,
-    };
-
-    await FirebaseFirestore.instance
-        .collection('adminRequests')
-        .doc(request.id)
-        .update(update);
-
-    if (approved) {
-      if (request.type == 'credit_request' &&
-          request.targetUserId != null) {
-        await UserService.addCredits(
-            request.targetUserId!, request.amount);
-      } else if (request.type == 'slot_increase' &&
-          request.classId != null) {
-        final cls = await ClassService.getClass(request.classId!);
-        if (cls != null) {
-          final current = int.tryParse(cls.groupSize) ?? 0;
-          await ClassService.updateGroupSize(
-              request.classId!, current + request.amount);
-        }
-      }
-    }
-
-    if (context.mounted) {
-      AppToast.success(
-          context, approved ? 'Request approved' : 'Request rejected');
-    }
   }
 }

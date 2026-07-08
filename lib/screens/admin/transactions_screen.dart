@@ -17,8 +17,12 @@ class _TransactionsScreenState extends State<TransactionsScreen> {
   @override
   void initState() {
     super.initState();
-    _reload();
-    _search.addListener(() => setState(() => _query = _search.text.trim().toLowerCase()));
+    // Assign directly — no setState needed before the first build
+    _future = ConfigService.getTransactions();
+    _search.addListener(() {
+      if (!mounted) return;
+      setState(() => _query = _search.text.trim().toLowerCase());
+    });
   }
 
   @override
@@ -27,7 +31,10 @@ class _TransactionsScreenState extends State<TransactionsScreen> {
     super.dispose();
   }
 
-  void _reload() => setState(() => _future = ConfigService.getTransactions());
+  void _reload() {
+    if (!mounted) return;
+    setState(() => _future = ConfigService.getTransactions());
+  }
 
   List<Map<String, String>> _filter(List<Map<String, String>> rows) {
     if (_query.isEmpty) return rows;
