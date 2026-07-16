@@ -12,7 +12,6 @@ import 'plan_management_screen.dart';
 import 'type_management_screen.dart';
 import 'admin_requests_screen.dart';
 import 'user_management_screen.dart';
-import 'attendance_report_screen.dart';
 import 'transactions_screen.dart';
 
 class AdminHomeScreen extends StatefulWidget {
@@ -153,16 +152,7 @@ class _AdminHomeScreenState extends State<AdminHomeScreen> {
           const SizedBox(height: 22),
           _SectionHeader('Reports'),
           const SizedBox(height: 12),
-          _tile(
-            context,
-            icon: Icons.bar_chart_outlined,
-            color: const Color(0xFF4FC3F7),
-            title: 'Attendance Report',
-            subtitle: 'Month-wise log of bookings, cancellations & waitlist',
-            page: const AttendanceReportScreen(),
-          ),
           if (widget.userModel?.isSuperAdmin == true) ...[
-            const SizedBox(height: 10),
             _tile(
               context,
               icon: Icons.groups_outlined,
@@ -171,6 +161,7 @@ class _AdminHomeScreenState extends State<AdminHomeScreen> {
               subtitle: 'Who signed up for which class, by day',
               page: const ClassRosterScreen(),
             ),
+            const SizedBox(height: 10),
           ],
           const SizedBox(height: 10),
           _tile(

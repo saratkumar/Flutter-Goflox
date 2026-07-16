@@ -7,6 +7,7 @@ import 'package:cached_network_image/cached_network_image.dart';
 import '../../models/class_model.dart';
 import '../../services/class_service.dart';
 import '../../services/config_service.dart';
+import '../../services/membership_plan_service.dart';
 import '../../services/user_service.dart';
 import '../../services/waiting_list_service.dart';
 import '../../services/email_service.dart';
@@ -92,6 +93,19 @@ class _ClassesScreenState extends State<ClassesScreen> {
     if (picked != null) setState(() => _selectedDate = picked);
   }
 
+  /// PT-tier members (active membership category 'Personal Training') can
+  /// book any class type; everyone else is blocked from Personal Training
+  /// classes specifically. Non-PT class types are unrestricted.
+  Future<bool> _canAccessPersonalTraining(ClassModel cls, String uid) async {
+    if (cls.type.trim().toLowerCase() != 'personal training') return true;
+    final user = await UserService.getUser(uid);
+    final activePlanName = user?.activeMembership?.planName;
+    final category = activePlanName != null
+        ? await MembershipPlanService.getCategoryForPlanName(activePlanName)
+        : null;
+    return category?.trim().toLowerCase() == 'personal training';
+  }
+
   Future<void> _book(BuildContext context, ClassModel cls) async {
     final uid = FirebaseAuth.instance.currentUser!.uid;
     final classId = cls.effectiveId;
@@ -116,6 +130,14 @@ class _ClassesScreenState extends State<ClassesScreen> {
       if (alreadyBooked) {
         if (context.mounted) {
           AppToast.warning(context, "Already registered for ${cls.mode}");
+        }
+        return;
+      }
+
+      if (!await _canAccessPersonalTraining(cls, uid)) {
+        if (context.mounted) {
+          AppToast.error(context,
+              "This is a Personal Training class — purchase a Personal Training plan to book it");
         }
         return;
       }
@@ -226,6 +248,14 @@ class _ClassesScreenState extends State<ClassesScreen> {
     if (alreadyWaiting) {
       if (context.mounted) {
         AppToast.warning(context, "Already on the waiting list for ${cls.mode}");
+      }
+      return;
+    }
+
+    if (!await _canAccessPersonalTraining(cls, uid)) {
+      if (context.mounted) {
+        AppToast.error(context,
+            "This is a Personal Training class — purchase a Personal Training plan to join the waiting list");
       }
       return;
     }
@@ -737,11 +767,16 @@ class _CapacitySectionState extends State<_CapacitySection> {
         final isFull = capacity > 0 && booked >= capacity;
         final pct = capacity > 0 ? (booked / capacity).clamp(0.0, 1.0) : 0.0;
 
-        return FutureBuilder<int>(
-          future: WaitingListService.getWaitingCount(
-              widget.classId, widget.selectedDate),
+        return FutureBuilder<List<Object>>(
+          future: Future.wait([
+            WaitingListService.getWaitingCount(
+                widget.classId, widget.selectedDate),
+            WaitingListService.isOnWaitingList(
+                widget.classId, currentUid, widget.selectedDate),
+          ]),
           builder: (context, waitSnap) {
-            final waiting = waitSnap.data ?? 0;
+            final waiting = waitSnap.data?[0] as int? ?? 0;
+            final onWaitingList = waitSnap.data?[1] as bool? ?? false;
 
             return Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -817,6 +852,22 @@ class _CapacitySectionState extends State<_CapacitySection> {
                           : const Text('Book Now'),
                     ),
                   )
+                else if (onWaitingList)
+                  SizedBox(
+                    width: double.infinity,
+                    child: ElevatedButton.icon(
+                      onPressed: null,
+                      icon: const Icon(Icons.hourglass_top, size: 18),
+                      label: Text(waiting > 0
+                          ? 'Already in Waiting List · $waiting waiting'
+                          : 'Already in Waiting List'),
+                      style: ElevatedButton.styleFrom(
+                        disabledBackgroundColor:
+                            const Color(0xFFFFAB40).withValues(alpha: 0.15),
+                        disabledForegroundColor: const Color(0xFFFFAB40),
+                      ),
+                    ),
+                  )
                 else ...[
                   SizedBox(
                     width: double.infinity,
@@ -830,7 +881,9 @@ class _CapacitySectionState extends State<_CapacitySection> {
                             color: Color(0xFFFFAB40), width: 1),
                         elevation: 0,
                       ),
-                      child: const Text('Join Waiting List'),
+                      child: Text(waiting > 0
+                          ? 'Join Waiting List · $waiting waiting'
+                          : 'Join Waiting List'),
                     ),
                   ),
                   const SizedBox(height: 6),
