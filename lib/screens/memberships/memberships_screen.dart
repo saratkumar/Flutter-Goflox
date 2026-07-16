@@ -66,28 +66,33 @@ class _MembershipScreenState extends State<MembershipScreen> {
           amount: finalAmount,
           currency: 'sgd',
         );
+        // Payment confirmed server-side (verifies with Stripe before
+        // activating) — replaces trusting the client's own Firestore write.
+        await PaymentService.confirmMembershipPayment(
+          paymentIntentId: paymentRef,
+          planName: plan.name,
+          credits: plan.credits,
+          validityDays: plan.validityDays,
+        );
+        // Partial-discount coupon (still a real charge) — redemption count
+        // tracking only, not a security boundary like free redemption is.
+        if (coupon?.id != null) {
+          await CouponService.redeem(coupon!.id!);
+        }
       } else {
-        // Coupon covers the full price — no charge to process.
+        // Coupon covers the full price — no charge to process. Coupon
+        // validation + redemption + membership activation all happen
+        // atomically server-side rather than trusting the client.
+        if (coupon == null) {
+          throw Exception('A coupon is required for a free membership');
+        }
         paymentRef = 'coupon_${DateTime.now().millisecondsSinceEpoch}';
-      }
-
-      // Payment succeeded — activate membership in Firestore
-      final now = DateTime.now();
-      final endDate = plan.validityDays > 0
-          ? now.add(Duration(days: plan.validityDays))
-          : now.add(const Duration(days: 365));
-
-      final entry = MembershipEntry(
-        planName: plan.name,
-        credits: plan.credits,
-        startDate: now,
-        endDate: endDate,
-        purchasedAt: now,
-      );
-
-      await UserService.purchaseMembership(uid, entry);
-      if (coupon?.id != null) {
-        await CouponService.redeem(coupon!.id!);
+        await PaymentService.redeemFreeMembership(
+          planName: plan.name,
+          credits: plan.credits,
+          validityDays: plan.validityDays,
+          couponCode: coupon.code,
+        );
       }
 
       final currentUser = FirebaseAuth.instance.currentUser;

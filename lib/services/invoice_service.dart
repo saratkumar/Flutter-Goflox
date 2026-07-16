@@ -1,4 +1,4 @@
-import 'package:emailjs/emailjs.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'config_service.dart';
 
 class InvoiceService {
@@ -96,6 +96,10 @@ class InvoiceService {
     );
   }
 
+  /// Queues an invoice email via the Firebase "Trigger Email" Extension
+  /// (watches the `mail` collection, sends via Gmail SMTP) instead of
+  /// calling EmailJS directly. Success here only means the document was
+  /// queued, not that the email was actually delivered.
   static Future<void> _sendEmail({
     required String invoiceNumber,
     required String clientName,
@@ -107,25 +111,21 @@ class InvoiceService {
     required String paymentIntentId,
     required String date,
   }) async {
-    final serviceId = await ConfigService.get('emailjs_service_id');
-    final templateId = await ConfigService.get('emailjs_template_id');
-    final publicKey = await ConfigService.get('emailjs_public_key');
-
-    await send(
-      serviceId,
-      templateId,
-      {
-        'to_name': clientName,
-        'to_email': clientEmail,
-        'invoice_number': invoiceNumber,
-        'invoice_date': date,
-        'plan_name': planName,
-        'credits': credits.toString(),
-        'amount': amount.toStringAsFixed(2),
-        'currency': currency,
-        'payment_ref': paymentIntentId,
+    await FirebaseFirestore.instance.collection('mail').add({
+      'to': [clientEmail],
+      'message': {
+        'subject': 'Invoice $invoiceNumber — PSAS',
+        'html': '''
+          <div style="font-family: sans-serif; color: #0A0A0A;">
+            <h2 style="color: #FF7A00;">Invoice $invoiceNumber</h2>
+            <p>Date: $date</p>
+            <p>Plan: $planName ($credits credits)</p>
+            <p>Amount: $currency ${amount.toStringAsFixed(2)}</p>
+            <p>Payment Ref: $paymentIntentId</p>
+            <p>Thank you, $clientName.</p>
+          </div>
+        ''',
       },
-      Options(publicKey: publicKey),
-    );
+    });
   }
 }

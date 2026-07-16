@@ -1,14 +1,18 @@
-import 'dart:convert';
+import 'package:cloud_functions/cloud_functions.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_stripe/flutter_stripe.dart';
-import 'package:http/http.dart' as http;
-import 'config_service.dart';
 
 class PaymentService {
   // Safe to include in client code. Swap pk_test_ → pk_live_ for production.
   // Get yours from: https://dashboard.stripe.com/test/apikeys
   static const _publishableKey =
       'pk_test_51Tps5X5GDQ6NbhM7JIa90Yh2ce52faber57nbE9GJB4kZFS7QpxjF4nWO0RxNmWcs8kPNWAFX4vG2WcGKt5irYzu00nf4mQiQu';
+
+  // Cloud Functions are deployed to asia-southeast1 (see functions/index.js
+  // setGlobalOptions) — the default FirebaseFunctions.instance targets
+  // us-central1 and would silently fail to find any of these functions.
+  static final _functions =
+      FirebaseFunctions.instanceFor(region: 'asia-southeast1');
 
   static bool _initialized = false;
 
@@ -21,11 +25,12 @@ class PaymentService {
     _initialized = true;
   }
 
-  /// Fetches Stripe secret key from Google Sheet → creates PaymentIntent via
-  /// Stripe REST API → shows payment sheet to user.
+  /// Creates the PaymentIntent server-side (via the `createPaymentIntent`
+  /// Cloud Function — the Stripe secret key never touches the client) →
+  /// shows the payment sheet to the user.
   ///
   /// Throws [StripeException] if user cancels.
-  /// Throws [Exception] on network or Stripe API errors.
+  /// Throws on network/Cloud Function errors.
   /// Returns the Stripe PaymentIntent ID (pi_xxx) on success.
   static Future<String> processPayment({
     required String planName,
@@ -33,27 +38,15 @@ class PaymentService {
     required String currency,
   }) async {
     await _ensureInitialized();
-    final secretKey = await ConfigService.get('stripe_secret_key');
 
-    final response = await http.post(
-      Uri.parse('https://api.stripe.com/v1/payment_intents'),
-      headers: {
-        'Authorization': 'Bearer $secretKey',
-        'Content-Type': 'application/x-www-form-urlencoded',
-      },
-      body: 'amount=${(amount * 100).round()}'
-          '&currency=$currency'
-          '&automatic_payment_methods[enabled]=true'
-          '&description=${Uri.encodeComponent(planName)}',
-    );
-
-    if (response.statusCode != 200) {
-      final err = jsonDecode(response.body);
-      throw Exception(err['error']?['message'] ?? 'Failed to create payment');
-    }
-
-    final data = jsonDecode(response.body) as Map<String, dynamic>;
-    final clientSecret = data['client_secret'] as String;
+    final result = await _functions.httpsCallable('createPaymentIntent').call({
+      'amount': amount,
+      'currency': currency,
+      'planName': planName,
+    });
+    final data = result.data as Map;
+    final clientSecret = data['clientSecret'] as String;
+    final paymentIntentId = data['paymentIntentId'] as String;
 
     await Stripe.instance.initPaymentSheet(
       paymentSheetParameters: SetupPaymentSheetParameters(
@@ -84,8 +77,7 @@ class PaymentService {
     // Throws StripeException with code Canceled if user dismisses
     await Stripe.instance.presentPaymentSheet();
 
-    // Extract PI ID from client secret: "pi_xxx_secret_yyy" → "pi_xxx"
-    return clientSecret.split('_secret_').first;
+    return paymentIntentId;
   }
 
   /// Overwrites the PaymentIntent's description (initially set to the plan
@@ -94,14 +86,41 @@ class PaymentService {
   /// itself is already recorded in Firestore regardless of this call.
   static Future<void> setInvoiceDescription(
       String paymentIntentId, String invoiceNumber) async {
-    final secretKey = await ConfigService.get('stripe_secret_key');
-    await http.post(
-      Uri.parse('https://api.stripe.com/v1/payment_intents/$paymentIntentId'),
-      headers: {
-        'Authorization': 'Bearer $secretKey',
-        'Content-Type': 'application/x-www-form-urlencoded',
-      },
-      body: 'description=${Uri.encodeComponent(invoiceNumber)}',
-    );
+    await _functions.httpsCallable('updatePaymentDescription').call({
+      'paymentIntentId': paymentIntentId,
+      'description': invoiceNumber,
+    });
+  }
+
+  /// Verifies the payment succeeded server-side and activates the
+  /// membership — replaces trusting the client's own Firestore write.
+  static Future<void> confirmMembershipPayment({
+    required String paymentIntentId,
+    required String planName,
+    required int credits,
+    required int validityDays,
+  }) async {
+    await _functions.httpsCallable('confirmMembershipPayment').call({
+      'paymentIntentId': paymentIntentId,
+      'planName': planName,
+      'credits': credits,
+      'validityDays': validityDays,
+    });
+  }
+
+  /// Validates and redeems a 100%-off coupon server-side, then activates
+  /// the membership — replaces trusting the client's own coupon validation.
+  static Future<void> redeemFreeMembership({
+    required String planName,
+    required int credits,
+    required int validityDays,
+    required String couponCode,
+  }) async {
+    await _functions.httpsCallable('redeemFreeMembership').call({
+      'planName': planName,
+      'credits': credits,
+      'validityDays': validityDays,
+      'couponCode': couponCode,
+    });
   }
 }
