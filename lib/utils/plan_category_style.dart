@@ -7,25 +7,32 @@ import 'package:flutter/material.dart';
 class PlanCategoryStyle {
   final IconData icon;
   final Color color;
-  const PlanCategoryStyle(this.icon, this.color);
+  final String description;
+  const PlanCategoryStyle(this.icon, this.color, this.description);
 
   static const _known = {
-    'Trials': PlanCategoryStyle(Icons.explore_outlined, Color(0xFF00D4AA)),
-    'Drop-In': PlanCategoryStyle(Icons.bolt_outlined, Color(0xFF4FC3F7)),
-    'Credits': PlanCategoryStyle(Icons.stars_outlined, Color(0xFFFFAB40)),
-    'Monthly': PlanCategoryStyle(Icons.autorenew, Color(0xFFB388FF)),
-    'Upfront': PlanCategoryStyle(
-        Icons.workspace_premium_outlined, Color(0xFFFFD54F)),
-    'Personal Training':
-        PlanCategoryStyle(Icons.person_outline, Color(0xFFFF7043)),
-    'Yoga': PlanCategoryStyle(Icons.self_improvement, Color(0xFF80CBC4)),
+    'Trials': PlanCategoryStyle(Icons.explore_outlined, Color(0xFF00D4AA),
+        'A one-off, low-cost way to try a class before committing to a plan.'),
+    'Drop-In': PlanCategoryStyle(Icons.bolt_outlined, Color(0xFF4FC3F7),
+        'Pay per visit, no commitment — best if you attend occasionally.'),
+    'Credits': PlanCategoryStyle(Icons.stars_outlined, Color(0xFFFFAB40),
+        'A block of class credits to use at your own pace before they expire.'),
+    'Monthly': PlanCategoryStyle(Icons.autorenew, Color(0xFFB388FF),
+        'Ongoing access billed monthly — best if you train regularly.'),
+    'Upfront': PlanCategoryStyle(Icons.workspace_premium_outlined,
+        Color(0xFFFFD54F),
+        'Pay once for a longer stretch of access, usually the best per-visit price.'),
+    'Personal Training': PlanCategoryStyle(Icons.person_outline,
+        Color(0xFFFF7043), '1-on-1 coaching sessions with a trainer.'),
+    'Yoga': PlanCategoryStyle(Icons.self_improvement, Color(0xFF80CBC4),
+        'Plans scoped to yoga classes specifically.'),
   };
 
   static const _fallbackPalette = [
-    PlanCategoryStyle(Icons.category_outlined, Color(0xFF9E9E9E)),
-    PlanCategoryStyle(Icons.local_offer_outlined, Color(0xFFEC407A)),
-    PlanCategoryStyle(Icons.emoji_events_outlined, Color(0xFF26A69A)),
-    PlanCategoryStyle(Icons.groups_outlined, Color(0xFF7986CB)),
+    PlanCategoryStyle(Icons.category_outlined, Color(0xFF9E9E9E), ''),
+    PlanCategoryStyle(Icons.local_offer_outlined, Color(0xFFEC407A), ''),
+    PlanCategoryStyle(Icons.emoji_events_outlined, Color(0xFF26A69A), ''),
+    PlanCategoryStyle(Icons.groups_outlined, Color(0xFF7986CB), ''),
   ];
 
   static PlanCategoryStyle of(String category) {

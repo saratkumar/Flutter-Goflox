@@ -9,6 +9,9 @@ import '../screens/trainer/trainer_home_screen.dart';
 import '../screens/trainer/trainer_history_screen.dart';
 import '../screens/trainer/trainer_requests_screen.dart';
 import '../screens/admin/admin_home_screen.dart';
+import '../screens/admin/user_management_screen.dart';
+import '../screens/admin/transactions_screen.dart';
+import '../screens/admin/activity_log_screen.dart';
 import '../utils/app_colors.dart';
 
 class BottomNav extends StatefulWidget {
@@ -73,10 +76,10 @@ class _BottomNavState extends State<BottomNav> {
     switch (_effectiveRole) {
       case 'admin':
         return [
-          const TimetableScreen(),
+          const UserManagementScreen(),
+          const TransactionsScreen(),
+          const ActivityLogScreen(),
           AdminHomeScreen(userModel: widget.userModel),
-          const BookingsScreen(),
-          const MembershipScreen(),
         ];
       case 'trainer':
         return const [
@@ -98,28 +101,24 @@ class _BottomNavState extends State<BottomNav> {
       case 'admin':
         return const [
           NavigationDestination(
-            icon: Icon(Icons.calendar_month_outlined, color: Color(0xFF666666)),
-            selectedIcon: Icon(Icons.calendar_month, color: AppColors.primary),
-            label: 'Timetable',
+            icon: Icon(Icons.people_outline, color: Color(0xFF666666)),
+            selectedIcon: Icon(Icons.people, color: AppColors.primary),
+            label: 'Users',
           ),
           NavigationDestination(
-            icon: Icon(Icons.admin_panel_settings_outlined,
-                color: Color(0xFF666666)),
-            selectedIcon:
-                Icon(Icons.admin_panel_settings, color: AppColors.primary),
-            label: 'Admin',
+            icon: Icon(Icons.receipt_long_outlined, color: Color(0xFF666666)),
+            selectedIcon: Icon(Icons.receipt_long, color: AppColors.primary),
+            label: 'Transactions',
           ),
           NavigationDestination(
-            icon: Icon(Icons.bookmark_border, color: Color(0xFF666666)),
-            selectedIcon: Icon(Icons.bookmark, color: AppColors.primary),
-            label: 'Bookings',
+            icon: Icon(Icons.history, color: Color(0xFF666666)),
+            selectedIcon: Icon(Icons.history, color: AppColors.primary),
+            label: 'Activity Log',
           ),
           NavigationDestination(
-            icon:
-                Icon(Icons.card_membership_outlined, color: Color(0xFF666666)),
-            selectedIcon:
-                Icon(Icons.card_membership, color: AppColors.primary),
-            label: 'Plans',
+            icon: Icon(Icons.more_horiz, color: Color(0xFF666666)),
+            selectedIcon: Icon(Icons.more_horiz, color: AppColors.primary),
+            label: 'More',
           ),
         ];
       case 'trainer':
@@ -266,8 +265,9 @@ class _BottomNavState extends State<BottomNav> {
       backgroundColor: AppColors.bg,
       shape: const RoundedRectangleBorder(
           borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
-      builder: (_) => Padding(
-        padding: const EdgeInsets.fromLTRB(20, 24, 20, 32),
+      builder: (sheetContext) => Padding(
+        padding: EdgeInsets.fromLTRB(
+            20, 24, 20, MediaQuery.of(sheetContext).padding.bottom + 32),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,

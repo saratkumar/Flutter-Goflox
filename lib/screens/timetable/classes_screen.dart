@@ -95,15 +95,20 @@ class _ClassesScreenState extends State<ClassesScreen> {
 
   /// PT-tier members (active membership category 'Personal Training') can
   /// book any class type; everyone else is blocked from Personal Training
-  /// classes specifically. Non-PT class types are unrestricted.
+  /// classes specifically. Non-PT class types are unrestricted. An active
+  /// admin-granted credit award (see [UserModel.hasUnrestrictedAccess])
+  /// always bypasses this gate, independent of whatever plan(s) the user
+  /// actually holds.
   Future<bool> _canAccessPersonalTraining(ClassModel cls, String uid) async {
     if (cls.type.trim().toLowerCase() != 'personal training') return true;
     final user = await UserService.getUser(uid);
-    final activePlanName = user?.activeMembership?.planName;
-    final category = activePlanName != null
-        ? await MembershipPlanService.getCategoryForPlanName(activePlanName)
-        : null;
-    return category?.trim().toLowerCase() == 'personal training';
+    if (user == null) return false;
+    if (user.hasUnrestrictedAccess) return true;
+    for (final m in user.memberships.where((m) => m.isActive)) {
+      final category = await MembershipPlanService.getCategoryForPlanName(m.planName);
+      if (category?.trim().toLowerCase() == 'personal training') return true;
+    }
+    return false;
   }
 
   Future<void> _book(BuildContext context, ClassModel cls) async {

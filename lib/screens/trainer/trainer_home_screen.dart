@@ -8,6 +8,7 @@ import '../../models/user_model.dart';
 import '../../services/class_service.dart';
 import '../../services/config_service.dart';
 import '../../services/user_service.dart';
+import '../../services/waiting_list_service.dart';
 import '../../services/notifications.dart';
 import '../../utils/app_colors.dart';
 import '../../utils/app_toast.dart';
@@ -535,10 +536,14 @@ class _TrainerClassCard extends StatelessWidget {
           _info(Icons.schedule, '${cls.startTime} · ${cls.duration}'),
           _info(Icons.location_on_outlined, '${cls.location} · ${cls.detailLocation}'),
           const SizedBox(height: 12),
-          FutureBuilder<int>(
-            future: getEnrollment(cls.effectiveId),
+          FutureBuilder<List<int>>(
+            future: Future.wait([
+              getEnrollment(cls.effectiveId),
+              WaitingListService.getWaitingCount(cls.effectiveId, date),
+            ]),
             builder: (context, snap) {
-              final enrolled = snap.data ?? 0;
+              final enrolled = snap.data?[0] ?? 0;
+              final waiting = snap.data?[1] ?? 0;
               final full = capacity > 0 && enrolled >= capacity;
               return Row(
                 children: [
@@ -560,6 +565,21 @@ class _TrainerClassCard extends StatelessWidget {
                       child: const Text('FULL',
                           style: TextStyle(
                               fontSize: 10, color: AppColors.error, fontWeight: FontWeight.w700)),
+                    ),
+                  ],
+                  if (waiting > 0) ...[
+                    const SizedBox(width: 6),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFFFAB40).withValues(alpha: 0.12),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Text('$waiting waiting',
+                          style: const TextStyle(
+                              fontSize: 10,
+                              color: Color(0xFFFFAB40),
+                              fontWeight: FontWeight.w700)),
                     ),
                   ],
                 ],

@@ -1,0 +1,11 @@
+{
+  "projects": {},
+  "targets": {},
+  "etags": {
+    "fitness-booking-app-23bdc": {
+      "extensionInstances": {
+        "firestore-send-email-yqyu": "fff618aa149285dd3b36bf13a99a9aca6ac94cfcf798d4b66ebb54e4bd2f1b93"
+      }
+    }
+  }
+}

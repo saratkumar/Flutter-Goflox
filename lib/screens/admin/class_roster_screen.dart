@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../../services/config_service.dart';
+import '../../services/waiting_list_service.dart';
 import '../../utils/app_colors.dart';
 
 /// Shows who's currently enrolled in each class on a given day, reconciled
@@ -35,9 +36,22 @@ class _ClassRosterScreenState extends State<ClassRosterScreen> {
       _loaded = false;
     });
     final rows = await ConfigService.getActivityLog(date: _date);
+    final groups = _buildRoster(rows);
+
+    // Waiting-list count is live state, not history — read straight from
+    // Firestore (same source the client/trainer screens use) rather than
+    // trying to reconstruct it from the Sheet log, which has no stable way
+    // to correlate a "joined" event with its eventual resolution.
+    final waitingCounts = await Future.wait(
+      groups.map((g) => WaitingListService.getWaitingCount(g.classId, _date)),
+    );
+    for (var i = 0; i < groups.length; i++) {
+      groups[i].waiting = waitingCounts[i];
+    }
+
     if (!mounted) return;
     setState(() {
-      _groups = _buildRoster(rows);
+      _groups = groups;
       _loading = false;
       _loaded = true;
     });
@@ -193,6 +207,7 @@ class _ClassGroup {
   final String className;
   final String sessionTime;
   final List<_RosterEntry> members = [];
+  int waiting = 0;
 
   _ClassGroup({
     required this.classId,
@@ -235,17 +250,37 @@ class _GroupCard extends StatelessWidget {
           subtitle: Text(group.sessionTime,
               style:
                   const TextStyle(fontSize: 12, color: AppColors.textSecondary)),
-          trailing: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-            decoration: BoxDecoration(
-              color: AppColors.primary.withValues(alpha: 0.12),
-              borderRadius: BorderRadius.circular(20),
-            ),
-            child: Text('${group.members.length} enrolled',
-                style: const TextStyle(
-                    fontSize: 12,
-                    color: AppColors.primary,
-                    fontWeight: FontWeight.w700)),
+          trailing: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                decoration: BoxDecoration(
+                  color: AppColors.primary.withValues(alpha: 0.12),
+                  borderRadius: BorderRadius.circular(20),
+                ),
+                child: Text('${group.members.length} enrolled',
+                    style: const TextStyle(
+                        fontSize: 12,
+                        color: AppColors.primary,
+                        fontWeight: FontWeight.w700)),
+              ),
+              if (group.waiting > 0) ...[
+                const SizedBox(width: 6),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFFFAB40).withValues(alpha: 0.12),
+                    borderRadius: BorderRadius.circular(20),
+                  ),
+                  child: Text('${group.waiting} waiting',
+                      style: const TextStyle(
+                          fontSize: 12,
+                          color: Color(0xFFFFAB40),
+                          fontWeight: FontWeight.w700)),
+                ),
+              ],
+            ],
           ),
           children: group.members
               .map((m) => Padding(
@@ -258,8 +293,6 @@ class _GroupCard extends StatelessWidget {
                               style: const TextStyle(
                                   fontSize: 14, color: AppColors.textPrimary)),
                         ),
-                        if (m.eventType == 'Admitted from Waitlist')
-                          _chip('waitlisted', const Color(0xFFFFAB40)),
                         if (m.bookedByRole != 'client') ...[
                           const SizedBox(width: 6),
                           _chip('by ${m.bookedByRole}', AppColors.primary),

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import '../../models/user_model.dart';
 import '../../services/backup_service.dart';
 import '../../utils/app_colors.dart';
+import 'appointment_management_screen.dart';
 import 'backup_screen.dart';
 import 'cash_payment_screen.dart';
 import 'class_management_screen.dart';
@@ -11,8 +12,6 @@ import 'facility_management_screen.dart';
 import 'plan_management_screen.dart';
 import 'type_management_screen.dart';
 import 'admin_requests_screen.dart';
-import 'user_management_screen.dart';
-import 'transactions_screen.dart';
 
 class AdminHomeScreen extends StatefulWidget {
   final UserModel? userModel;
@@ -26,9 +25,12 @@ class _AdminHomeScreenState extends State<AdminHomeScreen> {
   @override
   void initState() {
     super.initState();
-    WidgetsBinding.instance.addPostFrameCallback((_) => _checkBackupReminder());
+    // Backup menu is hidden for now, so skip the reminder dialog too —
+    // it would otherwise point at a screen the admin can't reach.
+    // WidgetsBinding.instance.addPostFrameCallback((_) => _checkBackupReminder());
   }
 
+  // ignore: unused_element
   Future<void> _checkBackupReminder() async {
     final overdue = await BackupService.isOverdue();
     if (!overdue || !mounted) return;
@@ -70,7 +72,7 @@ class _AdminHomeScreenState extends State<AdminHomeScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Admin Panel')),
+      appBar: AppBar(title: const Text('More')),
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
@@ -105,11 +107,11 @@ class _AdminHomeScreenState extends State<AdminHomeScreen> {
           const SizedBox(height: 10),
           _tile(
             context,
-            icon: Icons.people_outline,
-            color: const Color(0xFFB388FF),
-            title: 'Users',
-            subtitle: 'Manage roles, credits and memberships',
-            page: const UserManagementScreen(),
+            icon: Icons.event_available_outlined,
+            color: const Color(0xFFFF7043),
+            title: 'Appointment Slots',
+            subtitle: 'Manage one-on-one bookable slots',
+            page: const AppointmentManagementScreen(),
           ),
           const SizedBox(height: 10),
           _tile(
@@ -149,10 +151,10 @@ class _AdminHomeScreenState extends State<AdminHomeScreen> {
             subtitle: 'Credit requests and slot increase approvals',
             page: const AdminRequestsScreen(),
           ),
-          const SizedBox(height: 22),
-          _SectionHeader('Reports'),
-          const SizedBox(height: 12),
           if (widget.userModel?.isSuperAdmin == true) ...[
+            const SizedBox(height: 22),
+            _SectionHeader('Reports'),
+            const SizedBox(height: 12),
             _tile(
               context,
               icon: Icons.groups_outlined,
@@ -161,26 +163,9 @@ class _AdminHomeScreenState extends State<AdminHomeScreen> {
               subtitle: 'Who signed up for which class, by day',
               page: const ClassRosterScreen(),
             ),
-            const SizedBox(height: 10),
           ],
-          const SizedBox(height: 10),
-          _tile(
-            context,
-            icon: Icons.receipt_long_outlined,
-            color: const Color(0xFF66BB6A),
-            title: 'Transactions',
-            subtitle: 'Payment history, revenue summary and invoice lookup',
-            page: const TransactionsScreen(),
-          ),
-          const SizedBox(height: 10),
-          _tile(
-            context,
-            icon: Icons.backup_outlined,
-            color: const Color(0xFF7E57C2),
-            title: 'Backup',
-            subtitle: 'Export logs and requests to CSV/Excel',
-            page: const BackupScreen(),
-          ),
+          // Backup menu hidden for now — BackupScreen/CleanupService are
+          // untouched, just not linked from the menu.
         ],
       ),
     );

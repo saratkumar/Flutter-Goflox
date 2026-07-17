@@ -1,5 +1,11 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 
+/// Sentinel planName marking a membership entry as an admin-granted credit
+/// award rather than a real purchased plan. While active (endDate in the
+/// future), it unlocks booking any class type — including Personal
+/// Training — regardless of whatever plan(s) the user actually has.
+const String kAdminGrantedPlanName = 'Admin Granted Credits';
+
 class MembershipEntry {
   final String planName;
   final int credits;
@@ -78,6 +84,21 @@ class UserModel {
     active.sort((a, b) => b.endDate.compareTo(a.endDate));
     return active.first;
   }
+
+  /// The active admin-granted credit award, if any — distinct from
+  /// [activeMembership], which only returns the single *latest-expiring*
+  /// active entry and could miss this if the user also holds a real plan
+  /// that happens to expire later.
+  MembershipEntry? get activeAdminGrant {
+    for (final m in memberships) {
+      if (m.planName == kAdminGrantedPlanName && m.isActive) return m;
+    }
+    return null;
+  }
+
+  /// True while an unexpired admin-granted credit award exists — unlocks
+  /// booking any class type regardless of the user's actual plan(s).
+  bool get hasUnrestrictedAccess => activeAdminGrant != null;
 
   factory UserModel.fromFirestore(Map<String, dynamic> data, String uid) {
     final rawMemberships = data['memberships'] as List<dynamic>? ?? [];

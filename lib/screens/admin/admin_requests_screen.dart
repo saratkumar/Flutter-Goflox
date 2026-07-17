@@ -166,6 +166,8 @@ class _RequestCardState extends State<_RequestCard> {
         return 'Credit Request';
       case 'session_cancel':
         return 'Session Cancellation Request';
+      case 'appointment_booking':
+        return 'Appointment Booking Request';
       default:
         return 'Slot Increase Request';
     }
@@ -177,6 +179,16 @@ class _RequestCardState extends State<_RequestCard> {
     setState(() => _processing = true);
     try {
       final adminUid = FirebaseAuth.instance.currentUser?.uid ?? '';
+
+      // Rejecting an appointment_booking frees the slot immediately, no
+      // matter what — approving leaves it locked (occupied by this
+      // confirmed booking).
+      if (!approved && req.type == 'appointment_booking' && req.classId != null) {
+        await FirebaseFirestore.instance
+            .collection('appointmentSlots')
+            .doc(req.classId)
+            .update({'activeRequestId': null});
+      }
 
       if (approved) {
         if (req.type == 'credit_request' && req.targetUserId != null) {
@@ -229,13 +241,20 @@ class _RequestCardState extends State<_RequestCard> {
       // ActivityLog, then remove the Firestore record entirely. If the
       // archive write fails, keep the Firestore record (status-flipped)
       // instead of losing the only copy of what happened.
-      final typeLabel =
-          req.type == 'credit_request' ? 'Credit Request' : 'Slot Increase';
+      final typeLabel = switch (req.type) {
+        'credit_request' => 'Credit Request',
+        'appointment_booking' => 'Appointment Booking',
+        _ => 'Slot Increase',
+      };
+      // appointment_booking's sessionDate holds a weekday label ("Monday"),
+      // not a real ISO date — only session_cancel/slot_increase's
+      // sessionDate is DateTime.parse-able.
+      final isAppointment = req.type == 'appointment_booking';
       final archived = await ConfigService.logActivityEvent(
         eventType: '$typeLabel ${approved ? 'Approved' : 'Rejected'}',
         classId: req.classId ?? '',
         className: req.className ?? '',
-        sessionDate: req.sessionDate != null
+        sessionDate: (!isAppointment && req.sessionDate != null)
             ? DateTime.parse(req.sessionDate!)
             : req.createdAt,
         sessionTime: '',
@@ -249,7 +268,11 @@ class _RequestCardState extends State<_RequestCard> {
             : req.note,
       );
 
-      if (archived) {
+      // Appointment requests stay in Firestore (status-flipped, never
+      // deleted) — the client's Appointments screen reads this doc to show
+      // "Confirmed for you" / rejected state, unlike credit/slot-increase
+      // requests which only need the Sheet archive as their record.
+      if (archived && !isAppointment) {
         await FirebaseFirestore.instance
             .collection('adminRequests')
             .doc(req.id)
@@ -613,6 +636,10 @@ class _RequestCardState extends State<_RequestCard> {
             _info('Trainer', req.requestedByName),
             _info('Client', req.targetUserName ?? '—'),
             _info('Credits requested', '${req.amount}'),
+          ] else if (req.type == 'appointment_booking') ...[
+            _info('Client', req.requestedByName),
+            _info('Appointment', req.className ?? '—'),
+            _info('Day', req.sessionDate ?? '—'),
           ] else ...[
             _info('Trainer', req.requestedByName),
             _info('Class', req.className ?? '—'),

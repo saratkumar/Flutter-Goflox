@@ -213,6 +213,18 @@ class _MembershipScreenState extends State<MembershipScreen> {
                     .where((p) => p.category == _selectedCategory)
                     .toList();
 
+                // Surface the cheapest-per-credit plan as "Best Value" so
+                // it's obvious which option to pick without reading every
+                // card — only meaningful when there's more than one plan
+                // to compare and credits are actually comparable.
+                String? bestValuePlanName;
+                final withCredits = plans.where((p) => p.credits > 0).toList();
+                if (plans.length > 1 && withCredits.length > 1) {
+                  withCredits.sort(
+                      (a, b) => (a.price / a.credits).compareTo(b.price / b.credits));
+                  bestValuePlanName = withCredits.first.name;
+                }
+
                 return StreamBuilder<UserModel?>(
                   stream: UserService.currentUserStream(),
                   builder: (ctx, snap) {
@@ -230,6 +242,17 @@ class _MembershipScreenState extends State<MembershipScreen> {
                           selected: _selectedCategory!,
                           onSelect: (c) => setState(() => _selectedCategory = c),
                         ),
+                        if (PlanCategoryStyle.of(_selectedCategory!)
+                            .description
+                            .isNotEmpty)
+                          Padding(
+                            padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+                            child: Text(
+                              PlanCategoryStyle.of(_selectedCategory!).description,
+                              style: const TextStyle(
+                                  fontSize: 12, color: AppColors.textSecondary),
+                            ),
+                          ),
                         Expanded(
                           child: ListView.builder(
                             padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
@@ -243,6 +266,7 @@ class _MembershipScreenState extends State<MembershipScreen> {
                                 plan: plan,
                                 color: color,
                                 isOwned: isOwned,
+                                isBestValue: plan.name == bestValuePlanName,
                                 onSelect: () => _openCheckout(context, plan),
                               );
                             },
@@ -396,25 +420,31 @@ class _ActivePlanRow extends StatelessWidget {
     final endDay = DateTime(
         entry.endDate.year, entry.endDate.month, entry.endDate.day);
     final daysLeft = endDay.difference(today).inDays;
+    final isAdminGrant = entry.planName == kAdminGrantedPlanName;
+    final accent = isAdminGrant ? const Color(0xFFFFAB40) : AppColors.primary;
     return Container(
       margin: const EdgeInsets.only(top: 6),
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
       decoration: BoxDecoration(
         color: AppColors.bg,
         borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: AppColors.divider),
+        border: Border.all(
+            color: isAdminGrant ? accent.withValues(alpha: 0.4) : AppColors.divider),
       ),
       child: Row(
         children: [
-          const Icon(Icons.verified_rounded,
-              color: AppColors.primary, size: 14),
+          Icon(isAdminGrant ? Icons.stars_rounded : Icons.verified_rounded,
+              color: accent, size: 14),
           const SizedBox(width: 8),
           Expanded(
-            child: Text(entry.planName,
-                style: const TextStyle(
+            child: Text(
+                isAdminGrant
+                    ? '${entry.planName} · unlocks any class'
+                    : entry.planName,
+                style: TextStyle(
                     fontSize: 13,
                     fontWeight: FontWeight.w600,
-                    color: AppColors.textPrimary)),
+                    color: isAdminGrant ? accent : AppColors.textPrimary)),
           ),
           Text('$daysLeft days left',
               style: TextStyle(
@@ -433,12 +463,14 @@ class _PlanCard extends StatelessWidget {
   final MembershipPlanModel plan;
   final Color color;
   final bool isOwned;
+  final bool isBestValue;
   final VoidCallback onSelect;
 
   const _PlanCard({
     required this.plan,
     required this.color,
     required this.isOwned,
+    required this.isBestValue,
     required this.onSelect,
   });
 
@@ -478,19 +510,24 @@ class _PlanCard extends StatelessWidget {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      if (plan.badge != null)
+                      if (plan.badge != null || isBestValue)
                         Container(
                           margin: const EdgeInsets.only(bottom: 6),
                           padding: const EdgeInsets.symmetric(
                               horizontal: 8, vertical: 3),
                           decoration: BoxDecoration(
-                            color: color.withValues(alpha: 0.2),
+                            color: (plan.badge == null
+                                    ? const Color(0xFF00D4AA)
+                                    : color)
+                                .withValues(alpha: 0.2),
                             borderRadius: BorderRadius.circular(6),
                           ),
-                          child: Text(plan.badge!,
+                          child: Text(plan.badge ?? 'BEST VALUE',
                               style: TextStyle(
                                   fontSize: 10,
-                                  color: color,
+                                  color: plan.badge == null
+                                      ? const Color(0xFF00D4AA)
+                                      : color,
                                   fontWeight: FontWeight.w700,
                                   letterSpacing: 0.5)),
                         ),
@@ -684,7 +721,9 @@ class _CheckoutSheetState extends State<_CheckoutSheet> {
         left: 20,
         right: 20,
         top: 24,
-        bottom: MediaQuery.of(context).viewInsets.bottom + 24,
+        bottom: MediaQuery.of(context).viewInsets.bottom +
+            MediaQuery.of(context).padding.bottom +
+            24,
       ),
       child: Column(
         mainAxisSize: MainAxisSize.min,

@@ -1,7 +1,9 @@
+import 'dart:async';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import '../../models/user_model.dart';
+import '../../services/config_service.dart';
 import '../../services/user_service.dart';
 import '../../utils/app_colors.dart';
 import '../../utils/app_toast.dart';
@@ -82,8 +84,6 @@ class _UserManagementScreenState extends State<UserManagementScreen> {
                   itemBuilder: (context, i) => _UserCard(
                     user: users[i],
                     onTap: () => _openEditSheet(context, users[i]),
-                    onQuickCredit: (delta) =>
-                        _quickCredit(context, users[i], delta),
                   ),
                 );
               },
@@ -117,17 +117,6 @@ class _UserManagementScreenState extends State<UserManagementScreen> {
     );
   }
 
-  Future<void> _quickCredit(
-      BuildContext context, UserModel user, int delta) async {
-    await UserService.addCredits(user.uid, delta);
-    if (context.mounted) {
-      AppToast.success(
-          context,
-          delta > 0
-              ? '+$delta credits added to ${user.name}'
-              : '${delta.abs()} credits removed from ${user.name}');
-    }
-  }
 }
 
 // ── Filters ──────────────────────────────────────────────────────────────────
@@ -209,12 +198,10 @@ class _Filters extends StatelessWidget {
 class _UserCard extends StatelessWidget {
   final UserModel user;
   final VoidCallback onTap;
-  final void Function(int delta) onQuickCredit;
 
   const _UserCard({
     required this.user,
     required this.onTap,
-    required this.onQuickCredit,
   });
 
   Color get _roleColor {
@@ -328,11 +315,13 @@ class _UserCard extends StatelessWidget {
                           fontSize: 12,
                           fontWeight: FontWeight.w600,
                           color: AppColors.textSecondary)),
-                  const Spacer(),
-                  // Quick credit buttons
-                  _creditBtn(context, -10, AppColors.error),
-                  const SizedBox(width: 6),
-                  _creditBtn(context, 10, const Color(0xFF00D4AA)),
+                  if (user.hasUnrestrictedAccess) ...[
+                    const SizedBox(width: 8),
+                    _pill(
+                        'Admin credit · exp '
+                        '${_fmtDate(user.activeAdminGrant!.endDate)}',
+                        const Color(0xFFFFAB40)),
+                  ],
                 ],
               ),
             ),
@@ -358,27 +347,8 @@ class _UserCard extends StatelessWidget {
     );
   }
 
-  Widget _creditBtn(BuildContext context, int delta, Color color) {
-    return GestureDetector(
-      onTap: () => onQuickCredit(delta),
-      child: Container(
-        padding:
-            const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-        decoration: BoxDecoration(
-          color: color.withValues(alpha: 0.12),
-          borderRadius: BorderRadius.circular(8),
-          border: Border.all(color: color.withValues(alpha: 0.3)),
-        ),
-        child: Text(
-          delta >= 0 ? '+$delta' : '$delta',
-          style: TextStyle(
-              fontSize: 11,
-              fontWeight: FontWeight.w700,
-              color: color),
-        ),
-      ),
-    );
-  }
+  String _fmtDate(DateTime d) =>
+      '${d.day.toString().padLeft(2, '0')}/${d.month.toString().padLeft(2, '0')}/${d.year}';
 }
 
 // ── Edit sheet ────────────────────────────────────────────────────────────────
@@ -411,10 +381,27 @@ class _UserEditSheetState extends State<_UserEditSheet> {
   }
 
   Future<void> _save() async {
-    setState(() => _saving = true);
     final newCredits =
         int.tryParse(_creditsCtrl.text) ?? widget.user.credits;
     final creditDiff = newCredits - widget.user.credits;
+
+    // Credit increases are recorded as an admin-granted membership entry
+    // (not a raw credits++) so they unlock unrestricted class booking and
+    // carry a real expiry, distinct from a purchased plan. See
+    // kAdminGrantedPlanName in user_model.dart.
+    DateTime? grantExpiry;
+    if (creditDiff > 0) {
+      grantExpiry = await showDatePicker(
+        context: context,
+        initialDate: DateTime.now().add(const Duration(days: 30)),
+        firstDate: DateTime.now(),
+        lastDate: DateTime.now().add(const Duration(days: 3650)),
+        helpText: 'Credit expiry date',
+      );
+      if (grantExpiry == null) return; // cancelled — abort, nothing saved
+    }
+
+    setState(() => _saving = true);
 
     await UserService.updateRole(
       widget.user.uid,
@@ -423,8 +410,39 @@ class _UserEditSheetState extends State<_UserEditSheet> {
       adminPermissions: const [],
     );
 
-    if (creditDiff != 0) {
+    if (creditDiff > 0) {
+      final now = DateTime.now();
+      await UserService.purchaseMembership(
+        widget.user.uid,
+        MembershipEntry(
+          planName: kAdminGrantedPlanName,
+          credits: creditDiff,
+          startDate: now,
+          endDate: grantExpiry!,
+          purchasedAt: now,
+        ),
+      );
+    } else if (creditDiff < 0) {
       await UserService.addCredits(widget.user.uid, creditDiff);
+    }
+
+    if (creditDiff != 0) {
+      final admin = FirebaseAuth.instance.currentUser;
+      unawaited(ConfigService.logActivityEvent(
+        eventType: 'Credit Adjusted by Admin',
+        classId: '',
+        className: '',
+        sessionDate: DateTime.now(),
+        sessionTime: '',
+        userId: widget.user.uid,
+        userName: widget.user.name,
+        bookedByRole: 'admin',
+        creditsUsed: creditDiff,
+        note: '${creditDiff > 0 ? '+' : ''}$creditDiff credits by '
+            '${admin?.displayName ?? admin?.email ?? 'admin'} '
+            '(new total: $newCredits)'
+            '${grantExpiry != null ? ', expires ${_fmtDate(grantExpiry)}' : ''}',
+      ));
     }
 
     if (mounted) {
@@ -432,6 +450,9 @@ class _UserEditSheetState extends State<_UserEditSheet> {
       AppToast.success(context, '${widget.user.name} updated');
     }
   }
+
+  String _fmtDate(DateTime d) =>
+      '${d.day.toString().padLeft(2, '0')}/${d.month.toString().padLeft(2, '0')}/${d.year}';
 
   Future<void> _deactivate() async {
     final ok = await showDialog<bool>(
@@ -473,7 +494,9 @@ class _UserEditSheetState extends State<_UserEditSheet> {
         left: 20,
         right: 20,
         top: 24,
-        bottom: MediaQuery.of(context).viewInsets.bottom + 24,
+        bottom: MediaQuery.of(context).viewInsets.bottom +
+            MediaQuery.of(context).padding.bottom +
+            24,
       ),
       child: SingleChildScrollView(
         child: Column(
@@ -534,13 +557,46 @@ class _UserEditSheetState extends State<_UserEditSheet> {
               decoration: InputDecoration(
                 labelText: 'Credit balance',
                 helperText:
-                    'Current: ${widget.user.credits} — set new total',
+                    'Current: ${widget.user.credits} — set new total. '
+                    'Raising it will ask for an expiry date and grant '
+                    'unrestricted class access until then.',
+                helperMaxLines: 3,
                 border: OutlineInputBorder(
                     borderRadius: BorderRadius.circular(10)),
                 contentPadding: const EdgeInsets.symmetric(
                     horizontal: 14, vertical: 12),
               ),
             ),
+            if (widget.user.hasUnrestrictedAccess) ...[
+              const SizedBox(height: 10),
+              Container(
+                padding: const EdgeInsets.symmetric(
+                    horizontal: 12, vertical: 10),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFFFAB40).withValues(alpha: 0.1),
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(
+                      color: const Color(0xFFFFAB40).withValues(alpha: 0.3)),
+                ),
+                child: Row(
+                  children: [
+                    const Icon(Icons.stars_rounded,
+                        size: 16, color: Color(0xFFFFAB40)),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        'Has admin-granted credits — unlocks any class '
+                        'until ${_fmtDate(widget.user.activeAdminGrant!.endDate)}',
+                        style: const TextStyle(
+                            fontSize: 12,
+                            color: Color(0xFFFFAB40),
+                            fontWeight: FontWeight.w600),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
             const SizedBox(height: 20),
             SizedBox(
               width: double.infinity,
@@ -617,7 +673,9 @@ class _CreateUserSheetState extends State<_CreateUserSheet> {
         left: 20,
         right: 20,
         top: 24,
-        bottom: MediaQuery.of(context).viewInsets.bottom + 24,
+        bottom: MediaQuery.of(context).viewInsets.bottom +
+            MediaQuery.of(context).padding.bottom +
+            24,
       ),
       child: SingleChildScrollView(
         child: Form(
