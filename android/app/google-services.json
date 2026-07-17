@@ -118,6 +118,22 @@
       },
       "oauth_client": [
         {
+          "client_id": "100021036305-e4ihd25jng12u2kt070mkvfcq6hrbp4h.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.psas.booking",
+            "certificate_hash": "766830509bbd13cea2206c8d0a4ebcdf8717847f"
+          }
+        },
+        {
+          "client_id": "100021036305-sqmnm8ik4ce8pu45akln36t2m52762re.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.psas.booking",
+            "certificate_hash": "68b49198a6208e85e738de9aa69ef65b03a229b4"
+          }
+        },
+        {
           "client_id": "100021036305-a5kic50251dh99t0ti77duprrivac2m4.apps.googleusercontent.com",
           "client_type": 3
         }
