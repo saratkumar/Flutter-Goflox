@@ -48,3 +48,8 @@ functions/node_modules
 
 # Extension configs contain live SMTP credentials in plaintext
 extensions/*.env
+
+# Release signing secrets
+/android/key.properties
+*.jks
+*.keystore

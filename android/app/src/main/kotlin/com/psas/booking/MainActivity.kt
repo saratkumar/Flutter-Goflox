@@ -1,4 +1,4 @@
-package com.example.fitness_booking
+package com.psas.booking
 
 import io.flutter.embedding.android.FlutterFragmentActivity
 
