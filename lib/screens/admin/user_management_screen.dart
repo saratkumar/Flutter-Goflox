@@ -319,7 +319,7 @@ class _UserCard extends StatelessWidget {
                     const SizedBox(width: 8),
                     _pill(
                         'Admin credit · exp '
-                        '${_fmtDate(user.activeAdminGrant!.endDate)}',
+                        '${_fmtDate(user.activeAdminGrant!.expiryDate)}',
                         const Color(0xFFFFAB40)),
                   ],
                 ],
@@ -385,10 +385,10 @@ class _UserEditSheetState extends State<_UserEditSheet> {
         int.tryParse(_creditsCtrl.text) ?? widget.user.credits;
     final creditDiff = newCredits - widget.user.credits;
 
-    // Credit increases are recorded as an admin-granted membership entry
+    // Credit increases are recorded via a dedicated AdminCreditGrant field
     // (not a raw credits++) so they unlock unrestricted class booking and
-    // carry a real expiry, distinct from a purchased plan. See
-    // kAdminGrantedPlanName in user_model.dart.
+    // carry a real expiry — kept separate from real purchased plans, see
+    // AdminCreditGrant's doc comment in user_model.dart.
     DateTime? grantExpiry;
     if (creditDiff > 0) {
       grantExpiry = await showDatePicker(
@@ -411,16 +411,10 @@ class _UserEditSheetState extends State<_UserEditSheet> {
     );
 
     if (creditDiff > 0) {
-      final now = DateTime.now();
-      await UserService.purchaseMembership(
+      await UserService.grantAdminCredit(
         widget.user.uid,
-        MembershipEntry(
-          planName: kAdminGrantedPlanName,
-          credits: creditDiff,
-          startDate: now,
-          endDate: grantExpiry!,
-          purchasedAt: now,
-        ),
+        creditDelta: creditDiff,
+        expiryDate: grantExpiry!,
       );
     } else if (creditDiff < 0) {
       await UserService.addCredits(widget.user.uid, creditDiff);
@@ -586,7 +580,7 @@ class _UserEditSheetState extends State<_UserEditSheet> {
                     Expanded(
                       child: Text(
                         'Has admin-granted credits — unlocks any class '
-                        'until ${_fmtDate(widget.user.activeAdminGrant!.endDate)}',
+                        'until ${_fmtDate(widget.user.activeAdminGrant!.expiryDate)}',
                         style: const TextStyle(
                             fontSize: 12,
                             color: Color(0xFFFFAB40),

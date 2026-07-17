@@ -117,4 +117,26 @@ class UserService {
       'credits': FieldValue.increment(entry.credits),
     });
   }
+
+  /// Records an admin-granted credit increase — separate from
+  /// [purchaseMembership] on purpose (see AdminCreditGrant's doc comment).
+  /// Replaces any previous grant rather than accumulating a history; only
+  /// the current one matters for access checks.
+  static Future<void> grantAdminCredit(
+    String uid, {
+    required int creditDelta,
+    required DateTime expiryDate,
+    bool unlocksAnyClass = true,
+  }) async {
+    final grant = AdminCreditGrant(
+      credits: creditDelta,
+      expiryDate: expiryDate,
+      grantedAt: DateTime.now(),
+      unlocksAnyClass: unlocksAnyClass,
+    );
+    await _db.collection('users').doc(uid).update({
+      'credits': FieldValue.increment(creditDelta),
+      'adminCreditGrant': grant.toMap(),
+    });
+  }
 }

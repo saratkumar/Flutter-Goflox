@@ -1,6 +1,8 @@
+import 'dart:async';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import '../models/admin_request_model.dart';
 import '../models/appointment_model.dart';
+import 'request_notification_service.dart';
 
 /// Backs the Appointments feature (one-on-one slots). The slot catalog
 /// lives in Firestore (admin-managed, replacing the old public Google
@@ -78,6 +80,11 @@ class AppointmentService {
       tx.set(requestRef, request.toFirestore());
       tx.update(slotRef, {'activeRequestId': requestRef.id});
     });
+    unawaited(RequestNotificationService.notifyAdminsOfNewRequest(
+      typeLabel: 'Appointment Booking Request',
+      requesterName: userName,
+      summary: '${slot.appointmentName} · ${slot.day} ${slot.time} · Coach: ${slot.coach}',
+    ));
   }
 
   /// Client cancelling their own still-pending request — frees the slot.

@@ -1,0 +1,182 @@
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import '../models/qr_payment_request_model.dart';
+import '../models/user_model.dart';
+import 'invoice_service.dart';
+import 'request_notification_service.dart';
+import 'user_service.dart';
+
+/// Backs the "pay via business QR code" flow: user scans the admin's
+/// configured QR (outside the app, in their own banking app), taps
+/// "I've Paid", and that queues a request an admin must manually confirm
+/// before the membership activates — there's no automated way to verify a
+/// QR/bank-transfer payment actually landed, so admin confirmation is the
+/// trust boundary here, not Stripe.
+class QrPaymentService {
+  static final _configDoc =
+      FirebaseFirestore.instance.collection('appMeta').doc('paymentQr');
+  static final _requestsCol =
+      FirebaseFirestore.instance.collection('qrPaymentRequests');
+
+  // ── QR config (admin-managed) ───────────────────────────────────────────
+
+  static Stream<Map<String, dynamic>?> streamConfig() {
+    return _configDoc.snapshots().map((d) => d.data());
+  }
+
+  static Future<void> setConfig({
+    required String imageUrl,
+    required String caption,
+  }) async {
+    await _configDoc.set({
+      'imageUrl': imageUrl,
+      'caption': caption,
+      'updatedAt': FieldValue.serverTimestamp(),
+    });
+  }
+
+  // ── Requests ─────────────────────────────────────────────────────────────
+
+  static Future<void> submitRequest({
+    required String planName,
+    required int credits,
+    required double amount,
+    required int validityDays,
+    String note = '',
+  }) async {
+    final user = await UserService.getCurrentUser();
+    if (user == null) throw Exception('Not signed in');
+
+    final request = QrPaymentRequestModel(
+      userId: user.uid,
+      userName: user.name,
+      userEmail: user.email,
+      planName: planName,
+      credits: credits,
+      amount: amount,
+      validityDays: validityDays,
+      note: note,
+      createdAt: DateTime.now(),
+    );
+    await _requestsCol.add(request.toFirestore());
+
+    await RequestNotificationService.notifyAdminsOfNewRequest(
+      typeLabel: 'QR Payment Confirmation',
+      requesterName: user.name,
+      summary: '$planName · $amount SGD',
+    );
+  }
+
+  static Stream<List<QrPaymentRequestModel>> streamPending() {
+    return _requestsCol
+        .where('status', isEqualTo: 'pending')
+        .snapshots()
+        .map((s) => s.docs.map(QrPaymentRequestModel.fromFirestore).toList()
+          ..sort((a, b) => a.createdAt.compareTo(b.createdAt)));
+  }
+
+  static Stream<List<QrPaymentRequestModel>> streamResolved() {
+    return _requestsCol
+        .where('status', whereIn: ['approved', 'rejected'])
+        .snapshots()
+        .map((s) => s.docs.map(QrPaymentRequestModel.fromFirestore).toList()
+          ..sort((a, b) => b.createdAt.compareTo(a.createdAt)));
+  }
+
+  static Stream<List<QrPaymentRequestModel>> streamMyRequests(String uid) {
+    return _requestsCol
+        .where('userId', isEqualTo: uid)
+        .where('status', isEqualTo: 'pending')
+        .snapshots()
+        .map((s) => s.docs.map(QrPaymentRequestModel.fromFirestore).toList());
+  }
+
+  /// Grants the membership, records the transaction, and emails the
+  /// invoice (with or without [paymentRef] — see cash payment's identical
+  /// "don't fabricate a reference" rule).
+  static Future<void> approve(
+    QrPaymentRequestModel req, {
+    String? paymentRef,
+  }) async {
+    final adminUid = FirebaseAuth.instance.currentUser?.uid ?? '';
+    final now = DateTime.now();
+    final endDate = req.validityDays > 0
+        ? now.add(Duration(days: req.validityDays))
+        : now.add(const Duration(days: 365));
+
+    await UserService.purchaseMembership(
+      req.userId,
+      MembershipEntry(
+        planName: req.planName,
+        credits: req.credits,
+        startDate: now,
+        endDate: endDate,
+        purchasedAt: now,
+      ),
+    );
+
+    final txRef = FirebaseFirestore.instance.collection('transactions').doc();
+    final internalRef = 'qr_${txRef.id}';
+    final invoiceNumber = InvoiceService.generateInvoiceNumber(internalRef);
+
+    await txRef.set({
+      'invoiceNumber': invoiceNumber,
+      'paymentIntentId': internalRef,
+      if (paymentRef != null && paymentRef.isNotEmpty) 'clientPaymentRef': paymentRef,
+      'paymentMethod': 'qr',
+      'clientUid': req.userId,
+      'clientName': req.userName,
+      'clientEmail': req.userEmail,
+      'planName': req.planName,
+      'credits': req.credits,
+      'amount': req.amount,
+      'currency': req.currency,
+      'createdAt': FieldValue.serverTimestamp(),
+    });
+
+    InvoiceService.processWithInvoice(
+      invoiceNumber: invoiceNumber,
+      paymentIntentId: internalRef,
+      clientName: req.userName,
+      clientEmail: req.userEmail,
+      planName: req.planName,
+      credits: req.credits,
+      amount: req.amount,
+      currency: req.currency,
+      displayPaymentRef: paymentRef,
+    ).then((result) {
+      final (emailSent, error) = result;
+      return txRef.update({
+        'invoiceEmailSent': emailSent,
+        if (error != null) 'invoiceEmailError': error,
+      });
+    }).catchError((_) {});
+
+    await _requestsCol.doc(req.id).update({
+      'status': 'approved',
+      'resolvedAt': Timestamp.now(),
+      'resolvedBy': adminUid,
+      if (paymentRef != null && paymentRef.isNotEmpty) 'paymentRef': paymentRef,
+    });
+
+    await RequestNotificationService.notifyRequesterOfResolution(
+      requesterUid: req.userId,
+      typeLabel: 'QR Payment (${req.planName})',
+      approved: true,
+    );
+  }
+
+  static Future<void> reject(QrPaymentRequestModel req) async {
+    final adminUid = FirebaseAuth.instance.currentUser?.uid ?? '';
+    await _requestsCol.doc(req.id).update({
+      'status': 'rejected',
+      'resolvedAt': Timestamp.now(),
+      'resolvedBy': adminUid,
+    });
+    await RequestNotificationService.notifyRequesterOfResolution(
+      requesterUid: req.userId,
+      typeLabel: 'QR Payment (${req.planName})',
+      approved: false,
+    );
+  }
+}

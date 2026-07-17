@@ -4,7 +4,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show Clipboard, ClipboardData;
 import '../../models/membership_plan_model.dart';
 import '../../models/user_model.dart';
-import '../../services/invoice_pdf_service.dart';
 import '../../services/invoice_service.dart';
 import '../../services/membership_plan_service.dart';
 import '../../services/user_service.dart';
@@ -32,6 +31,7 @@ class _CashPaymentScreenState extends State<CashPaymentScreen> {
   late final TextEditingController _amount;
   late final TextEditingController _credits;
   late final TextEditingController _invoiceNumber;
+  late final TextEditingController _paymentRef;
 
   @override
   void initState() {
@@ -39,6 +39,7 @@ class _CashPaymentScreenState extends State<CashPaymentScreen> {
     _amount = TextEditingController();
     _credits = TextEditingController();
     _invoiceNumber = TextEditingController();
+    _paymentRef = TextEditingController();
     _loadData();
   }
 
@@ -47,6 +48,7 @@ class _CashPaymentScreenState extends State<CashPaymentScreen> {
     _amount.dispose();
     _credits.dispose();
     _invoiceNumber.dispose();
+    _paymentRef.dispose();
     super.dispose();
   }
 
@@ -155,14 +157,22 @@ class _CashPaymentScreenState extends State<CashPaymentScreen> {
       );
 
       final txRef = FirebaseFirestore.instance.collection('transactions').doc();
-      final paymentRef = 'cash_${txRef.id}';
+      // Internal bookkeeping id only — never shown to the client. What
+      // actually prints as "Payment Ref" on the invoice is clientRef below:
+      // either the admin's own entered reference, or nothing at all. We
+      // don't fabricate a fake reference for a cash/off-app payment.
+      final internalRef = 'cash_${txRef.id}';
+      final clientRef = _paymentRef.text.trim().isEmpty
+          ? null
+          : _paymentRef.text.trim();
       final reused = _invoiceNumber.text.trim();
       final invoiceNumber =
-          reused.isNotEmpty ? reused : InvoiceService.generateInvoiceNumber(paymentRef);
+          reused.isNotEmpty ? reused : InvoiceService.generateInvoiceNumber(internalRef);
 
       await txRef.set({
         'invoiceNumber': invoiceNumber,
-        'paymentIntentId': paymentRef,
+        'paymentIntentId': internalRef,
+        if (clientRef != null) 'clientPaymentRef': clientRef,
         'paymentMethod': 'cash',
         'clientUid': client.uid,
         'clientName': client.name,
@@ -179,13 +189,14 @@ class _CashPaymentScreenState extends State<CashPaymentScreen> {
       // the PDF below is the actual invoice delivery method for now.
       InvoiceService.processWithInvoice(
         invoiceNumber: invoiceNumber,
-        paymentIntentId: paymentRef,
+        paymentIntentId: internalRef,
         clientName: client.name,
         clientEmail: client.email,
         planName: plan.name,
         credits: credits,
         amount: amount,
         currency: 'SGD',
+        displayPaymentRef: clientRef,
       ).then((result) {
         final (emailSent, error) = result;
         return txRef.update({
@@ -196,31 +207,15 @@ class _CashPaymentScreenState extends State<CashPaymentScreen> {
 
       if (mounted) {
         AppToast.success(context,
-            '${plan.name} activated for ${client.name} (+$credits credits)');
+            '${plan.name} activated for ${client.name} (+$credits credits) — invoice emailed');
         setState(() {
           _selectedClient = null;
           _selectedPlan = null;
           _amount.clear();
           _credits.clear();
           _invoiceNumber.clear();
+          _paymentRef.clear();
         });
-      }
-
-      try {
-        await InvoicePdfService.shareInvoice(
-          invoiceNumber: invoiceNumber,
-          paymentRef: paymentRef,
-          clientName: client.name,
-          clientEmail: client.email,
-          planName: plan.name,
-          credits: credits,
-          amount: amount,
-          currency: 'SGD',
-        );
-      } catch (e) {
-        if (mounted) {
-          AppToast.error(context, 'Could not generate invoice PDF: $e');
-        }
       }
     } catch (e) {
       if (mounted) {
@@ -344,6 +339,22 @@ class _CashPaymentScreenState extends State<CashPaymentScreen> {
                       child: const Text('Generate'),
                     ),
                   ],
+                ),
+                const SizedBox(height: 12),
+                TextFormField(
+                  controller: _paymentRef,
+                  decoration: InputDecoration(
+                    labelText: 'Payment Reference (optional)',
+                    helperText: "Client's own reference — bank transfer ID, "
+                        "cheque number, PayNow ref, etc. Left blank, the "
+                        "invoice simply won't show a payment ref line; "
+                        "nothing is made up to fill the space.",
+                    helperMaxLines: 3,
+                    border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(10)),
+                    contentPadding: const EdgeInsets.symmetric(
+                        horizontal: 14, vertical: 12),
+                  ),
                 ),
                 const SizedBox(height: 20),
                 ElevatedButton(

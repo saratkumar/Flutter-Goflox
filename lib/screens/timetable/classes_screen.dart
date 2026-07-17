@@ -217,6 +217,8 @@ class _ClassesScreenState extends State<ClassesScreen> {
             email: email,
             className: cls.mode,
             classTime: cls.startTime,
+            classDate: _selectedDate,
+            location: cls.location,
           );
         } catch (e) {
           debugPrint('Booking email failed: $e');

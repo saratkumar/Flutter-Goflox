@@ -32,6 +32,11 @@ class InvoiceService {
     required int credits,
     required double amount,
     required String currency,
+    // What actually prints as "Payment Ref" on the client-facing invoice —
+    // a real Stripe ID, or an admin-entered reference for cash payments.
+    // Null omits the line entirely rather than showing an internal,
+    // system-generated id that means nothing to the client.
+    String? displayPaymentRef,
   }) async {
     final now = DateTime.now();
     final dateStr =
@@ -60,7 +65,7 @@ class InvoiceService {
             credits: credits,
             amount: amount,
             currency: currency,
-            paymentIntentId: paymentIntentId,
+            displayPaymentRef: displayPaymentRef,
             date: dateStr,
           );
           emailSent = true;
@@ -108,9 +113,12 @@ class InvoiceService {
     required int credits,
     required double amount,
     required String currency,
-    required String paymentIntentId,
+    String? displayPaymentRef,
     required String date,
   }) async {
+    final refLine = (displayPaymentRef != null && displayPaymentRef.isNotEmpty)
+        ? '<p>Payment Ref: $displayPaymentRef</p>'
+        : '';
     await FirebaseFirestore.instance.collection('mail').add({
       'to': [clientEmail],
       'message': {
@@ -121,7 +129,7 @@ class InvoiceService {
             <p>Date: $date</p>
             <p>Plan: $planName ($credits credits)</p>
             <p>Amount: $currency ${amount.toStringAsFixed(2)}</p>
-            <p>Payment Ref: $paymentIntentId</p>
+            $refLine
             <p>Thank you, $clientName.</p>
           </div>
         ''',

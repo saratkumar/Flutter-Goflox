@@ -9,6 +9,7 @@ import '../screens/trainer/trainer_home_screen.dart';
 import '../screens/trainer/trainer_history_screen.dart';
 import '../screens/trainer/trainer_requests_screen.dart';
 import '../screens/admin/admin_home_screen.dart';
+import '../screens/admin/admin_requests_screen.dart';
 import '../screens/admin/user_management_screen.dart';
 import '../screens/admin/transactions_screen.dart';
 import '../screens/admin/activity_log_screen.dart';
@@ -79,6 +80,7 @@ class _BottomNavState extends State<BottomNav> {
           const UserManagementScreen(),
           const TransactionsScreen(),
           const ActivityLogScreen(),
+          const AdminRequestsScreen(),
           AdminHomeScreen(userModel: widget.userModel),
         ];
       case 'trainer':
@@ -114,6 +116,11 @@ class _BottomNavState extends State<BottomNav> {
             icon: Icon(Icons.history, color: Color(0xFF666666)),
             selectedIcon: Icon(Icons.history, color: AppColors.primary),
             label: 'Activity Log',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.inbox_outlined, color: Color(0xFF666666)),
+            selectedIcon: Icon(Icons.inbox, color: AppColors.primary),
+            label: 'Requests',
           ),
           NavigationDestination(
             icon: Icon(Icons.more_horiz, color: Color(0xFF666666)),

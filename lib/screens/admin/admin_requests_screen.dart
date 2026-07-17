@@ -3,11 +3,14 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import '../../models/admin_request_model.dart';
+import '../../models/qr_payment_request_model.dart';
 import '../../models/user_model.dart';
 import '../../services/user_service.dart';
 import '../../services/class_service.dart';
 import '../../services/config_service.dart';
 import '../../services/notifications.dart';
+import '../../services/qr_payment_service.dart';
+import '../../services/request_notification_service.dart';
 import '../../services/waiting_list_service.dart';
 import '../../utils/app_colors.dart';
 import '../../utils/app_toast.dart';
@@ -26,7 +29,7 @@ class _AdminRequestsScreenState extends State<AdminRequestsScreen>
   @override
   void initState() {
     super.initState();
-    _tab = TabController(length: 2, vsync: this);
+    _tab = TabController(length: 3, vsync: this);
   }
 
   @override
@@ -48,6 +51,7 @@ class _AdminRequestsScreenState extends State<AdminRequestsScreen>
           tabs: const [
             Tab(text: 'Pending'),
             Tab(text: 'Resolved'),
+            Tab(text: 'QR Payments'),
           ],
         ),
       ),
@@ -56,6 +60,295 @@ class _AdminRequestsScreenState extends State<AdminRequestsScreen>
         children: [
           _RequestList(statusFilter: 'pending'),
           _RequestList(statusFilter: null, excludePending: true),
+          const _QrPaymentsTab(),
+        ],
+      ),
+    );
+  }
+}
+
+// ── QR Payments tab ─────────────────────────────────────────────────────────
+
+class _QrPaymentsTab extends StatefulWidget {
+  const _QrPaymentsTab();
+
+  @override
+  State<_QrPaymentsTab> createState() => _QrPaymentsTabState();
+}
+
+class _QrPaymentsTabState extends State<_QrPaymentsTab> {
+  bool _showResolved = false;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      children: [
+        Padding(
+          padding: const EdgeInsets.all(14),
+          child: Row(
+            children: [
+              ChoiceChip(
+                label: const Text('Pending'),
+                selected: !_showResolved,
+                onSelected: (_) => setState(() => _showResolved = false),
+                selectedColor: AppColors.primary.withValues(alpha: 0.15),
+                labelStyle: TextStyle(
+                    color: !_showResolved
+                        ? AppColors.primary
+                        : AppColors.textSecondary,
+                    fontWeight:
+                        !_showResolved ? FontWeight.w700 : FontWeight.w400),
+              ),
+              const SizedBox(width: 8),
+              ChoiceChip(
+                label: const Text('Resolved'),
+                selected: _showResolved,
+                onSelected: (_) => setState(() => _showResolved = true),
+                selectedColor: AppColors.primary.withValues(alpha: 0.15),
+                labelStyle: TextStyle(
+                    color: _showResolved
+                        ? AppColors.primary
+                        : AppColors.textSecondary,
+                    fontWeight:
+                        _showResolved ? FontWeight.w700 : FontWeight.w400),
+              ),
+            ],
+          ),
+        ),
+        Expanded(
+          child: StreamBuilder<List<QrPaymentRequestModel>>(
+            stream: _showResolved
+                ? QrPaymentService.streamResolved()
+                : QrPaymentService.streamPending(),
+            builder: (context, snap) {
+              if (snap.connectionState == ConnectionState.waiting &&
+                  !snap.hasData) {
+                return const Center(
+                    child: CircularProgressIndicator(color: AppColors.primary));
+              }
+              final reqs = snap.data ?? [];
+              if (reqs.isEmpty) {
+                return Center(
+                  child: Text(
+                      _showResolved ? 'No resolved QR payments' : 'No pending QR payments',
+                      style: const TextStyle(color: AppColors.textSecondary)),
+                );
+              }
+              return ListView.separated(
+                padding: const EdgeInsets.all(14),
+                itemCount: reqs.length,
+                separatorBuilder: (_, __) => const SizedBox(height: 10),
+                itemBuilder: (context, i) => _QrPaymentCard(req: reqs[i]),
+              );
+            },
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _QrPaymentCard extends StatefulWidget {
+  final QrPaymentRequestModel req;
+  const _QrPaymentCard({required this.req});
+
+  @override
+  State<_QrPaymentCard> createState() => _QrPaymentCardState();
+}
+
+class _QrPaymentCardState extends State<_QrPaymentCard> {
+  bool _processing = false;
+
+  Color get _statusColor {
+    switch (widget.req.status) {
+      case 'approved':
+        return const Color(0xFF00D4AA);
+      case 'rejected':
+        return AppColors.error;
+      default:
+        return const Color(0xFFFFAB40);
+    }
+  }
+
+  Future<void> _approve() async {
+    final refCtrl = TextEditingController();
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppColors.card,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+        title: const Text('Confirm Payment Received',
+            style: TextStyle(
+                color: AppColors.textPrimary, fontWeight: FontWeight.w700)),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+                '${widget.req.userName} · ${widget.req.planName} · '
+                '${widget.req.currency} ${widget.req.amount.toStringAsFixed(2)}',
+                style: const TextStyle(color: AppColors.textSecondary)),
+            const SizedBox(height: 14),
+            TextField(
+              controller: refCtrl,
+              decoration: InputDecoration(
+                labelText: 'Payment Reference (optional)',
+                helperText: 'Bank transfer ID etc — leave blank to omit from the invoice',
+                border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Cancel', style: TextStyle(color: AppColors.textMuted))),
+          ElevatedButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF00D4AA), foregroundColor: Colors.white),
+              child: const Text('Confirm & Activate')),
+        ],
+      ),
+    );
+    if (confirm != true) return;
+
+    setState(() => _processing = true);
+    try {
+      await QrPaymentService.approve(widget.req,
+          paymentRef: refCtrl.text.trim().isEmpty ? null : refCtrl.text.trim());
+      if (mounted) AppToast.success(context, 'Payment confirmed — plan activated & invoice emailed');
+    } catch (e) {
+      if (mounted) AppToast.error(context, 'Failed: $e');
+    } finally {
+      if (mounted) setState(() => _processing = false);
+    }
+  }
+
+  Future<void> _reject() async {
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppColors.card,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+        title: const Text('Reject this payment claim?',
+            style: TextStyle(
+                color: AppColors.textPrimary, fontWeight: FontWeight.w700)),
+        content: const Text(
+            "Use this if the payment never actually arrived. The client will be notified by email.",
+            style: TextStyle(color: AppColors.textSecondary)),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Cancel', style: TextStyle(color: AppColors.primary))),
+          ElevatedButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              style: ElevatedButton.styleFrom(
+                  backgroundColor: AppColors.error, foregroundColor: Colors.white),
+              child: const Text('Reject')),
+        ],
+      ),
+    );
+    if (confirm != true) return;
+
+    setState(() => _processing = true);
+    try {
+      await QrPaymentService.reject(widget.req);
+      if (mounted) AppToast.info(context, 'Request rejected');
+    } catch (e) {
+      if (mounted) AppToast.error(context, 'Failed: $e');
+    } finally {
+      if (mounted) setState(() => _processing = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final req = widget.req;
+    final isPending = req.status == 'pending';
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: AppColors.card,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(
+            color: isPending
+                ? const Color(0xFFFFAB40).withValues(alpha: 0.4)
+                : AppColors.divider),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: Text(req.planName,
+                    style: const TextStyle(
+                        fontSize: 15,
+                        fontWeight: FontWeight.w700,
+                        color: AppColors.textPrimary)),
+              ),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                decoration: BoxDecoration(
+                  color: _statusColor.withValues(alpha: 0.15),
+                  borderRadius: BorderRadius.circular(20),
+                ),
+                child: Text(req.status.toUpperCase(),
+                    style: TextStyle(
+                        fontSize: 10, color: _statusColor, fontWeight: FontWeight.w700)),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Text('Client: ${req.userName} (${req.userEmail})',
+              style: const TextStyle(fontSize: 12, color: AppColors.textSecondary)),
+          const SizedBox(height: 3),
+          Text('${req.currency} ${req.amount.toStringAsFixed(2)} · ${req.credits} credits',
+              style: const TextStyle(fontSize: 12, color: AppColors.textSecondary)),
+          if (req.paymentRef != null) ...[
+            const SizedBox(height: 3),
+            Text('Ref: ${req.paymentRef}',
+                style: const TextStyle(fontSize: 12, color: AppColors.textSecondary)),
+          ],
+          if (isPending) ...[
+            const SizedBox(height: 14),
+            if (_processing)
+              const Center(
+                  child: SizedBox(
+                      height: 24,
+                      width: 24,
+                      child: CircularProgressIndicator(
+                          strokeWidth: 2, color: AppColors.primary)))
+            else
+              Row(
+                children: [
+                  Expanded(
+                    child: OutlinedButton(
+                      onPressed: _reject,
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: AppColors.error,
+                        side: BorderSide(color: AppColors.error.withValues(alpha: 0.5)),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                      ),
+                      child: const Text('Reject'),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: ElevatedButton(
+                      onPressed: _approve,
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: const Color(0xFF00D4AA),
+                        foregroundColor: Colors.white,
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                      ),
+                      child: const Text('Confirm Payment'),
+                    ),
+                  ),
+                ],
+              ),
+          ],
         ],
       ),
     );
@@ -288,6 +581,12 @@ class _RequestCardState extends State<_RequestCard> {
         });
       }
 
+      unawaited(RequestNotificationService.notifyRequesterOfResolution(
+        requesterUid: req.requestedBy,
+        typeLabel: typeLabel,
+        approved: approved,
+      ));
+
       if (mounted) {
         AppToast.success(
             context,
@@ -452,6 +751,12 @@ class _RequestCardState extends State<_RequestCard> {
         });
       }
 
+      unawaited(RequestNotificationService.notifyRequesterOfResolution(
+        requesterUid: req.requestedBy,
+        typeLabel: 'Session Cancellation Request',
+        approved: true,
+      ));
+
       if (mounted) {
         AppToast.success(
             context,
@@ -535,6 +840,14 @@ class _RequestCardState extends State<_RequestCard> {
           'newTrainer': selected.name,
         });
       }
+
+      unawaited(RequestNotificationService.notifyRequesterOfResolution(
+        requesterUid: req.requestedBy,
+        typeLabel: 'Session Cancellation Request',
+        approved: true,
+        outcomeLabel: 'Reassigned',
+        note: 'Reassigned to ${selected.name}',
+      ));
 
       if (mounted) {
         AppToast.success(

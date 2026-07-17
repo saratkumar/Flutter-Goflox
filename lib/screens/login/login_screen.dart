@@ -1,7 +1,14 @@
+import 'dart:convert';
+import 'dart:io' show Platform;
+import 'dart:math';
+
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:google_sign_in/google_sign_in.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:crypto/crypto.dart';
+import 'package:sign_in_with_apple/sign_in_with_apple.dart';
 import '../../services/user_service.dart';
 import '../../utils/app_colors.dart';
 
@@ -36,53 +43,55 @@ class _LoginScreenState extends State<LoginScreen> {
       );
       final result =
           await FirebaseAuth.instance.signInWithCredential(credential);
-      final uid = result.user!.uid;
-      final email = result.user!.email ?? '';
+      await _upsertUserAndFinish(result);
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text(e.toString())));
+      }
+    }
+    if (mounted) setState(() => _loading = false);
+  }
 
-      final userRef =
-          FirebaseFirestore.instance.collection('users').doc(uid);
-      final existing = await userRef.get();
+  Future<void> _signInWithApple() async {
+    setState(() => _loading = true);
+    try {
+      final rawNonce = _generateNonce();
+      final nonce = _sha256ofString(rawNonce);
 
-      if (!existing.exists) {
-        // Check for an admin-created invitation for this email
-        final invite = await UserService.consumeInvitation(email);
-        final isSuperAdmin = _superAdminEmails.contains(email);
+      final appleCredential = await SignInWithApple.getAppleIDCredential(
+        scopes: [
+          AppleIDAuthorizationScopes.email,
+          AppleIDAuthorizationScopes.fullName,
+        ],
+        nonce: nonce,
+      );
 
-        final role = isSuperAdmin
-            ? 'admin'
-            : (invite?['role'] as String? ?? 'client');
-        final adminLevel = isSuperAdmin
-            ? 'super_admin'
-            : (invite?['adminLevel'] as String?);
+      final oauthCredential = OAuthProvider('apple.com').credential(
+        idToken: appleCredential.identityToken,
+        rawNonce: rawNonce,
+      );
 
-        await userRef.set({
-          'email': email,
-          'name': (invite?['name'] as String?)?.isNotEmpty == true
-              ? invite!['name']
-              : result.user!.displayName ?? '',
-          'photoUrl': result.user!.photoURL ?? '',
-          if ((invite?['phone'] as String?)?.isNotEmpty == true)
-            'phone': invite!['phone'],
-          'role': role,
-          if (adminLevel != null) 'adminLevel': adminLevel,
-          'adminPermissions': <String>[],
-          'credits': isSuperAdmin
-              ? 0
-              : (invite?['initialCredits'] as int? ?? 0),
-          'memberships': <Map<String, dynamic>>[],
-        });
-      } else {
-        // Update mutable profile fields; preserve role/credits
-        // Always enforce super_admin for designated emails
-        final isSuperAdmin = _superAdminEmails.contains(email);
-        await userRef.set({
-          'email': email,
-          'name': result.user!.displayName ?? '',
-          if ((result.user!.photoURL ?? '').isNotEmpty)
-            'photoUrl': result.user!.photoURL,
-          if (isSuperAdmin) 'role': 'admin',
-          if (isSuperAdmin) 'adminLevel': 'super_admin',
-        }, SetOptions(merge: true));
+      final result =
+          await FirebaseAuth.instance.signInWithCredential(oauthCredential);
+
+      // Apple only ever hands back the name on the first authorization for
+      // this app, and Firebase doesn't populate displayName for Apple sign-in,
+      // so it has to be captured here or it's lost for good.
+      final appleName = [appleCredential.givenName, appleCredential.familyName]
+          .where((s) => s != null && s.isNotEmpty)
+          .join(' ');
+
+      await _upsertUserAndFinish(
+        result,
+        displayName: appleName.isNotEmpty ? appleName : null,
+      );
+    } on SignInWithAppleAuthorizationException catch (e) {
+      if (e.code == AuthorizationErrorCode.canceled) {
+        // User dismissed the Apple sheet; nothing to report.
+      } else if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text(e.message)));
       }
     } catch (e) {
       if (mounted) {
@@ -91,6 +100,76 @@ class _LoginScreenState extends State<LoginScreen> {
       }
     }
     if (mounted) setState(() => _loading = false);
+  }
+
+  /// Shared post-auth step for every sign-in provider: creates the Firestore
+  /// user doc on first login (consuming any pending invitation), or merges
+  /// updated profile fields on repeat logins. [displayName] lets a provider
+  /// (e.g. Apple, which Firebase doesn't populate `displayName` for) supply
+  /// the name explicitly instead of relying on `result.user!.displayName`.
+  Future<void> _upsertUserAndFinish(
+    UserCredential result, {
+    String? displayName,
+  }) async {
+    final uid = result.user!.uid;
+    final email = result.user!.email ?? '';
+    final name = displayName ?? result.user!.displayName ?? '';
+    final photoUrl = result.user!.photoURL ?? '';
+
+    final userRef = FirebaseFirestore.instance.collection('users').doc(uid);
+    final existing = await userRef.get();
+
+    if (!existing.exists) {
+      // Check for an admin-created invitation for this email
+      final invite = await UserService.consumeInvitation(email);
+      final isSuperAdmin = _superAdminEmails.contains(email);
+
+      final role =
+          isSuperAdmin ? 'admin' : (invite?['role'] as String? ?? 'client');
+      final adminLevel =
+          isSuperAdmin ? 'super_admin' : (invite?['adminLevel'] as String?);
+
+      await userRef.set({
+        'email': email,
+        'name': (invite?['name'] as String?)?.isNotEmpty == true
+            ? invite!['name']
+            : name,
+        'photoUrl': photoUrl,
+        if ((invite?['phone'] as String?)?.isNotEmpty == true)
+          'phone': invite!['phone'],
+        'role': role,
+        if (adminLevel != null) 'adminLevel': adminLevel,
+        'adminPermissions': <String>[],
+        'credits':
+            isSuperAdmin ? 0 : (invite?['initialCredits'] as int? ?? 0),
+        'memberships': <Map<String, dynamic>>[],
+      });
+    } else {
+      // Update mutable profile fields; preserve role/credits.
+      // Always enforce super_admin for designated emails.
+      final isSuperAdmin = _superAdminEmails.contains(email);
+      await userRef.set({
+        'email': email,
+        if (name.isNotEmpty) 'name': name,
+        if (photoUrl.isNotEmpty) 'photoUrl': photoUrl,
+        if (isSuperAdmin) 'role': 'admin',
+        if (isSuperAdmin) 'adminLevel': 'super_admin',
+      }, SetOptions(merge: true));
+    }
+  }
+
+  String _generateNonce([int length = 32]) {
+    const charset =
+        '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz-._';
+    final random = Random.secure();
+    return List.generate(
+      length,
+      (_) => charset[random.nextInt(charset.length)],
+    ).join();
+  }
+
+  String _sha256ofString(String input) {
+    return sha256.convert(utf8.encode(input)).toString();
   }
 
   @override
@@ -157,7 +236,15 @@ class _LoginScreenState extends State<LoginScreen> {
                   if (_loading)
                     const CircularProgressIndicator(color: AppColors.primary)
                   else
-                    _GoogleButton(onTap: _signInWithGoogle),
+                    Column(
+                      children: [
+                        _GoogleButton(onTap: _signInWithGoogle),
+                        if (!kIsWeb && Platform.isIOS) ...[
+                          const SizedBox(height: 12),
+                          _AppleButton(onTap: _signInWithApple),
+                        ],
+                      ],
+                    ),
                   const SizedBox(height: 20),
                   const Text(
                     'Sign in once — stay signed in automatically',
@@ -243,6 +330,48 @@ class _GoogleButton extends StatelessWidget {
             SizedBox(width: 14),
             Text(
               'Continue with Google',
+              style: TextStyle(
+                fontSize: 16,
+                fontWeight: FontWeight.w600,
+                color: Colors.white,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _AppleButton extends StatelessWidget {
+  final VoidCallback onTap;
+  const _AppleButton({required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        width: double.infinity,
+        padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 24),
+        decoration: BoxDecoration(
+          color: Colors.black,
+          borderRadius: BorderRadius.circular(14),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(alpha: 0.15),
+              blurRadius: 20,
+              offset: const Offset(0, 6),
+            ),
+          ],
+        ),
+        child: const Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(Icons.apple, size: 22, color: Colors.white),
+            SizedBox(width: 14),
+            Text(
+              'Continue with Apple',
               style: TextStyle(
                 fontSize: 16,
                 fontWeight: FontWeight.w600,

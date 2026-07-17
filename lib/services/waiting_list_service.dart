@@ -2,6 +2,7 @@ import 'dart:async';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import '../models/waiting_list_model.dart';
 import 'config_service.dart';
+import 'email_service.dart';
 import 'user_service.dart';
 
 class WaitingListService {
@@ -173,6 +174,27 @@ class WaitingListService {
         creditsUsed: 0,
         bookingId: bookingRef.id,
       ));
+
+      // Waiting-list JOIN never gets a calendar invite (no confirmed slot
+      // yet) — only admission does, once the seat is actually theirs.
+      unawaited(() async {
+        final userDoc = await FirebaseFirestore.instance
+            .collection('users')
+            .doc(entry.userId)
+            .get();
+        final email = userDoc.data()?['email']?.toString() ?? '';
+        if (email.isEmpty) return;
+        try {
+          await EmailService.sendBookingEmail(
+            email: email,
+            className: className,
+            classTime: bookingTime,
+            classDate: bookingDate,
+          );
+        } catch (_) {
+          // Best-effort — admission itself already succeeded.
+        }
+      }());
     }
   }
 

@@ -10,6 +10,7 @@ import '../../services/config_service.dart';
 import '../../services/user_service.dart';
 import '../../services/waiting_list_service.dart';
 import '../../services/notifications.dart';
+import '../../services/request_notification_service.dart';
 import '../../utils/app_colors.dart';
 import '../../utils/app_toast.dart';
 
@@ -178,6 +179,13 @@ class _TrainerHomeScreenState extends State<TrainerHomeScreen> {
       ));
 
       await NotificationService.showNewAdminRequest('session_cancel');
+      unawaited(RequestNotificationService.notifyAdminsOfNewRequest(
+        typeLabel: 'Session Cancellation Request',
+        requesterName: _trainerName.isNotEmpty
+            ? _trainerName
+            : (me.displayName ?? me.email ?? ''),
+        summary: '${cls.mode} on $dateStr',
+      ));
 
       if (mounted) {
         AppToast.success(context, 'Cancellation request sent to admin for approval');
@@ -263,6 +271,11 @@ class _TrainerHomeScreenState extends State<TrainerHomeScreen> {
       creditsUsed: result,
     ));
     await NotificationService.showNewAdminRequest('slot_increase');
+    unawaited(RequestNotificationService.notifyAdminsOfNewRequest(
+      typeLabel: 'Slot Increase Request',
+      requesterName: me.displayName ?? me.email ?? '',
+      summary: '$result extra slot(s) for ${cls.mode} on $dateStr',
+    ));
     if (mounted) AppToast.success(context, 'Slot increase request sent to admin');
   }
 
@@ -327,6 +340,11 @@ class _TrainerHomeScreenState extends State<TrainerHomeScreen> {
           note: 'For client: ${selected.name}',
         ));
         await NotificationService.showNewAdminRequest('credit_request');
+        unawaited(RequestNotificationService.notifyAdminsOfNewRequest(
+          typeLabel: 'Credit Request',
+          requesterName: me.displayName ?? me.email ?? '',
+          summary: 'For client: ${selected.name} · ${cls.mode}',
+        ));
         if (mounted) {
           AppToast.success(context, 'Credit request sent to admin for ${selected.name}');
         }

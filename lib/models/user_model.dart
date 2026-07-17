@@ -1,10 +1,45 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 
-/// Sentinel planName marking a membership entry as an admin-granted credit
-/// award rather than a real purchased plan. While active (endDate in the
-/// future), it unlocks booking any class type — including Personal
-/// Training — regardless of whatever plan(s) the user actually has.
-const String kAdminGrantedPlanName = 'Admin Granted Credits';
+/// An admin-granted credit award — tracked on its own field, deliberately
+/// kept separate from [MembershipEntry]/memberships. It isn't a real
+/// purchased plan, so it shouldn't be forced through the same
+/// plan-name-matching machinery: whether it unlocks unrestricted class
+/// access is an explicit flag here ([unlocksAnyClass]), not an implicit
+/// behavior baked into a magic plan name. If that policy ever needs to
+/// change (e.g. admin credits should stop bypassing the Personal Training
+/// gate), it's a one-place change here rather than a rewrite of how
+/// memberships/plans are matched.
+class AdminCreditGrant {
+  final int credits;
+  final DateTime expiryDate;
+  final DateTime grantedAt;
+  final bool unlocksAnyClass;
+
+  const AdminCreditGrant({
+    required this.credits,
+    required this.expiryDate,
+    required this.grantedAt,
+    this.unlocksAnyClass = true,
+  });
+
+  bool get isActive => expiryDate.isAfter(DateTime.now());
+
+  factory AdminCreditGrant.fromMap(Map<String, dynamic> map) {
+    return AdminCreditGrant(
+      credits: map['credits'] ?? 0,
+      expiryDate: (map['expiryDate'] as Timestamp).toDate(),
+      grantedAt: (map['grantedAt'] as Timestamp).toDate(),
+      unlocksAnyClass: map['unlocksAnyClass'] ?? true,
+    );
+  }
+
+  Map<String, dynamic> toMap() => {
+        'credits': credits,
+        'expiryDate': Timestamp.fromDate(expiryDate),
+        'grantedAt': Timestamp.fromDate(grantedAt),
+        'unlocksAnyClass': unlocksAnyClass,
+      };
+}
 
 class MembershipEntry {
   final String planName;
@@ -53,6 +88,7 @@ class UserModel {
   final List<String> adminPermissions;
   final int credits;
   final List<MembershipEntry> memberships;
+  final AdminCreditGrant? adminCreditGrant;
 
   UserModel({
     required this.uid,
@@ -65,6 +101,7 @@ class UserModel {
     this.adminPermissions = const [],
     this.credits = 0,
     this.memberships = const [],
+    this.adminCreditGrant,
   });
 
   bool get isClient => role == 'client';
@@ -85,23 +122,21 @@ class UserModel {
     return active.first;
   }
 
-  /// The active admin-granted credit award, if any — distinct from
-  /// [activeMembership], which only returns the single *latest-expiring*
-  /// active entry and could miss this if the user also holds a real plan
-  /// that happens to expire later.
-  MembershipEntry? get activeAdminGrant {
-    for (final m in memberships) {
-      if (m.planName == kAdminGrantedPlanName && m.isActive) return m;
-    }
-    return null;
-  }
+  /// The active admin-granted credit award, if any.
+  AdminCreditGrant? get activeAdminGrant =>
+      (adminCreditGrant != null && adminCreditGrant!.isActive)
+          ? adminCreditGrant
+          : null;
 
-  /// True while an unexpired admin-granted credit award exists — unlocks
-  /// booking any class type regardless of the user's actual plan(s).
-  bool get hasUnrestrictedAccess => activeAdminGrant != null;
+  /// True while an unexpired admin-granted credit award that's flagged to
+  /// unlock unrestricted access exists — bypasses the Personal Training
+  /// gate regardless of the user's actual plan(s).
+  bool get hasUnrestrictedAccess =>
+      activeAdminGrant?.unlocksAnyClass ?? false;
 
   factory UserModel.fromFirestore(Map<String, dynamic> data, String uid) {
     final rawMemberships = data['memberships'] as List<dynamic>? ?? [];
+    final rawGrant = data['adminCreditGrant'] as Map<String, dynamic>?;
     return UserModel(
       uid: uid,
       email: data['email'] ?? '',
@@ -115,6 +150,8 @@ class UserModel {
       memberships: rawMemberships
           .map((e) => MembershipEntry.fromMap(e as Map<String, dynamic>))
           .toList(),
+      adminCreditGrant:
+          rawGrant != null ? AdminCreditGrant.fromMap(rawGrant) : null,
     );
   }
 
@@ -128,5 +165,7 @@ class UserModel {
         'adminPermissions': adminPermissions,
         'credits': credits,
         'memberships': memberships.map((m) => m.toMap()).toList(),
+        if (adminCreditGrant != null)
+          'adminCreditGrant': adminCreditGrant!.toMap(),
       };
 }

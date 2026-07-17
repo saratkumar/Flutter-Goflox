@@ -9,9 +9,9 @@ import 'class_management_screen.dart';
 import 'class_roster_screen.dart';
 import 'coupon_management_screen.dart';
 import 'facility_management_screen.dart';
+import 'payment_qr_screen.dart';
 import 'plan_management_screen.dart';
 import 'type_management_screen.dart';
-import 'admin_requests_screen.dart';
 
 class AdminHomeScreen extends StatefulWidget {
   final UserModel? userModel;
@@ -140,16 +140,14 @@ class _AdminHomeScreenState extends State<AdminHomeScreen> {
             subtitle: 'Sell a plan to a client who paid by cash',
             page: const CashPaymentScreen(),
           ),
-          const SizedBox(height: 22),
-          _SectionHeader('Approvals'),
-          const SizedBox(height: 12),
+          const SizedBox(height: 10),
           _tile(
             context,
-            icon: Icons.inbox_outlined,
-            color: const Color(0xFFFFAB40),
-            title: 'Pending Requests',
-            subtitle: 'Credit requests and slot increase approvals',
-            page: const AdminRequestsScreen(),
+            icon: Icons.qr_code_2_outlined,
+            color: const Color(0xFF4FC3F7),
+            title: 'Business QR Code',
+            subtitle: 'Configure the QR shown at checkout as an alternative to card',
+            page: const PaymentQrScreen(),
           ),
           if (widget.userModel?.isSuperAdmin == true) ...[
             const SizedBox(height: 22),

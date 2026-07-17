@@ -10,7 +10,7 @@ import 'package:share_plus/share_plus.dart';
 class InvoicePdfService {
   static Future<void> shareInvoice({
     required String invoiceNumber,
-    required String paymentRef,
+    String? paymentRef,
     required String clientName,
     required String clientEmail,
     required String planName,
@@ -52,9 +52,11 @@ class InvoicePdfService {
               ),
               pw.SizedBox(height: 24),
               pw.Text('Date: $dateStr', style: const pw.TextStyle(fontSize: 11)),
-              pw.SizedBox(height: 4),
-              pw.Text('Payment Ref: $paymentRef',
-                  style: const pw.TextStyle(fontSize: 11)),
+              if (paymentRef != null && paymentRef.isNotEmpty) ...[
+                pw.SizedBox(height: 4),
+                pw.Text('Payment Ref: $paymentRef',
+                    style: const pw.TextStyle(fontSize: 11)),
+              ],
               pw.SizedBox(height: 20),
               pw.Text('Billed To',
                   style: pw.TextStyle(

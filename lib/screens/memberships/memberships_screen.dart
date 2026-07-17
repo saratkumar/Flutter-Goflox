@@ -7,10 +7,10 @@ import '../../models/coupon_model.dart';
 import '../../models/membership_plan_model.dart';
 import '../../models/user_model.dart';
 import '../../services/coupon_service.dart';
-import '../../services/invoice_pdf_service.dart';
 import '../../services/invoice_service.dart';
 import '../../services/membership_plan_service.dart';
 import '../../services/payment_service.dart';
+import '../../services/qr_payment_service.dart';
 import '../../services/user_service.dart';
 import '../../utils/app_colors.dart';
 import '../../utils/app_toast.dart';
@@ -135,6 +135,7 @@ class _MembershipScreenState extends State<MembershipScreen> {
         credits: plan.credits,
         amount: finalAmount,
         currency: 'SGD',
+        displayPaymentRef: paymentRef,
       ).then((result) {
         final (emailSent, error) = result;
         return txDoc.update({
@@ -144,27 +145,8 @@ class _MembershipScreenState extends State<MembershipScreen> {
       }).catchError((_) {});
 
       if (context.mounted) {
-        AppToast.success(
-            context, '${plan.name} activated! +${plan.credits} credits added');
-      }
-
-      try {
-        await InvoicePdfService.shareInvoice(
-          invoiceNumber: invoiceNumber,
-          paymentRef: paymentRef,
-          clientName: currentUser?.displayName ?? 'Member',
-          clientEmail: currentUser?.email ?? '',
-          planName: plan.name,
-          credits: plan.credits,
-          amount: finalAmount,
-          currency: 'SGD',
-          couponCode: coupon?.code,
-          originalAmount: coupon != null ? plan.price : null,
-        );
-      } catch (e) {
-        if (context.mounted) {
-          AppToast.error(context, 'Could not generate invoice PDF: $e');
-        }
+        AppToast.success(context,
+            '${plan.name} activated! +${plan.credits} credits added — invoice emailed to you');
       }
     } on StripeException catch (e) {
       if (e.error.code != FailureCode.Canceled && context.mounted) {
@@ -387,6 +369,10 @@ class _CreditsAndPlansBanner extends StatelessWidget {
               ),
             ],
           ),
+          if (user.activeAdminGrant != null) ...[
+            const SizedBox(height: 12),
+            _AdminGrantRow(grant: user.activeAdminGrant!),
+          ],
           if (activePlans.isNotEmpty) ...[
             const SizedBox(height: 12),
             const Text('Active Plans',
@@ -396,12 +382,48 @@ class _CreditsAndPlansBanner extends StatelessWidget {
                     fontWeight: FontWeight.w600)),
             const SizedBox(height: 6),
             ...activePlans.map((m) => _ActivePlanRow(entry: m)),
-          ] else ...[
+          ] else if (user.activeAdminGrant == null) ...[
             const SizedBox(height: 6),
             const Text('No active plans — purchase one below',
                 style: TextStyle(
                     fontSize: 12, color: AppColors.textSecondary)),
           ],
+        ],
+      ),
+    );
+  }
+}
+
+class _AdminGrantRow extends StatelessWidget {
+  final AdminCreditGrant grant;
+  const _AdminGrantRow({required this.grant});
+
+  @override
+  Widget build(BuildContext context) {
+    const accent = Color(0xFFFFAB40);
+    final d = grant.expiryDate;
+    final label =
+        '${d.day.toString().padLeft(2, '0')}/${d.month.toString().padLeft(2, '0')}/${d.year}';
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      decoration: BoxDecoration(
+        color: accent.withValues(alpha: 0.1),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: accent.withValues(alpha: 0.4)),
+      ),
+      child: Row(
+        children: [
+          const Icon(Icons.stars_rounded, color: accent, size: 14),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              grant.unlocksAnyClass
+                  ? 'Admin credits · unlocks any class until $label'
+                  : 'Admin credits · until $label',
+              style: const TextStyle(
+                  fontSize: 13, fontWeight: FontWeight.w600, color: accent),
+            ),
+          ),
         ],
       ),
     );
@@ -420,31 +442,25 @@ class _ActivePlanRow extends StatelessWidget {
     final endDay = DateTime(
         entry.endDate.year, entry.endDate.month, entry.endDate.day);
     final daysLeft = endDay.difference(today).inDays;
-    final isAdminGrant = entry.planName == kAdminGrantedPlanName;
-    final accent = isAdminGrant ? const Color(0xFFFFAB40) : AppColors.primary;
     return Container(
       margin: const EdgeInsets.only(top: 6),
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
       decoration: BoxDecoration(
         color: AppColors.bg,
         borderRadius: BorderRadius.circular(10),
-        border: Border.all(
-            color: isAdminGrant ? accent.withValues(alpha: 0.4) : AppColors.divider),
+        border: Border.all(color: AppColors.divider),
       ),
       child: Row(
         children: [
-          Icon(isAdminGrant ? Icons.stars_rounded : Icons.verified_rounded,
-              color: accent, size: 14),
+          const Icon(Icons.verified_rounded,
+              color: AppColors.primary, size: 14),
           const SizedBox(width: 8),
           Expanded(
-            child: Text(
-                isAdminGrant
-                    ? '${entry.planName} · unlocks any class'
-                    : entry.planName,
-                style: TextStyle(
+            child: Text(entry.planName,
+                style: const TextStyle(
                     fontSize: 13,
                     fontWeight: FontWeight.w600,
-                    color: isAdminGrant ? accent : AppColors.textPrimary)),
+                    color: AppColors.textPrimary)),
           ),
           Text('$daysLeft days left',
               style: TextStyle(
@@ -683,6 +699,22 @@ class _CheckoutSheetState extends State<_CheckoutSheet> {
     if (mounted) Navigator.pop(context);
   }
 
+  Future<void> _payViaQr() async {
+    final submitted = await showModalBottomSheet<bool>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: AppColors.bg,
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (_) => _QrPaySheet(
+        plan: widget.plan,
+        amount: _finalAmount,
+        coupon: _appliedCoupon?.code,
+      ),
+    );
+    if (submitted == true && mounted) Navigator.pop(context);
+  }
+
   @override
   void dispose() {
     _couponCtrl.dispose();
@@ -829,8 +861,152 @@ class _CheckoutSheetState extends State<_CheckoutSheet> {
                   : Text(_finalAmount > 0 ? 'Confirm & Pay' : 'Confirm (Free)'),
             ),
           ),
+          if (_finalAmount > 0) ...[
+            const SizedBox(height: 10),
+            SizedBox(
+              width: double.infinity,
+              child: OutlinedButton.icon(
+                onPressed: _processing ? null : _payViaQr,
+                icon: const Icon(Icons.qr_code_2_outlined, size: 18),
+                label: const Text('Pay via QR Code'),
+              ),
+            ),
+          ],
         ],
       ),
+      ),
+    );
+  }
+}
+
+// ── Pay via QR code ──────────────────────────────────────────────────────────
+
+class _QrPaySheet extends StatefulWidget {
+  final MembershipPlanModel plan;
+  final double amount;
+  final String? coupon;
+
+  const _QrPaySheet({required this.plan, required this.amount, this.coupon});
+
+  @override
+  State<_QrPaySheet> createState() => _QrPaySheetState();
+}
+
+class _QrPaySheetState extends State<_QrPaySheet> {
+  bool _submitting = false;
+
+  Future<void> _submit() async {
+    setState(() => _submitting = true);
+    try {
+      await QrPaymentService.submitRequest(
+        planName: widget.plan.name,
+        credits: widget.plan.credits,
+        amount: widget.amount,
+        validityDays: widget.plan.validityDays,
+        note: widget.coupon != null ? 'Coupon: ${widget.coupon}' : '',
+      );
+      if (mounted) {
+        AppToast.success(context,
+            "Sent — we'll confirm your payment and activate ${widget.plan.name} shortly");
+        Navigator.pop(context, true);
+      }
+    } catch (e) {
+      if (mounted) AppToast.error(context, e.toString());
+      setState(() => _submitting = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: EdgeInsets.only(
+        left: 20,
+        right: 20,
+        top: 24,
+        bottom: MediaQuery.of(context).viewInsets.bottom +
+            MediaQuery.of(context).padding.bottom +
+            24,
+      ),
+      child: StreamBuilder<Map<String, dynamic>?>(
+        stream: QrPaymentService.streamConfig(),
+        builder: (context, snap) {
+          final imageUrl = snap.data?['imageUrl']?.toString() ?? '';
+          final caption = snap.data?['caption']?.toString() ?? '';
+          if (snap.connectionState == ConnectionState.waiting) {
+            return const SizedBox(
+                height: 200,
+                child: Center(
+                    child: CircularProgressIndicator(color: AppColors.primary)));
+          }
+          if (imageUrl.isEmpty) {
+            return const SizedBox(
+              height: 120,
+              child: Center(
+                child: Text('QR payment is not set up yet — ask admin.',
+                    style: TextStyle(color: AppColors.textSecondary)),
+              ),
+            );
+          }
+          return Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('Pay ${widget.plan.name} · \$${widget.amount.toStringAsFixed(2)}',
+                  style: const TextStyle(
+                      fontSize: 17,
+                      fontWeight: FontWeight.w700,
+                      color: AppColors.textPrimary)),
+              const SizedBox(height: 4),
+              Text(
+                  caption.isNotEmpty
+                      ? caption
+                      : 'Scan with your banking app to pay',
+                  style: const TextStyle(fontSize: 13, color: AppColors.textSecondary)),
+              const SizedBox(height: 16),
+              Center(
+                child: Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: AppColors.card,
+                    borderRadius: BorderRadius.circular(14),
+                    border: Border.all(color: AppColors.divider),
+                  ),
+                  child: Image.network(imageUrl, height: 240),
+                ),
+              ),
+              const SizedBox(height: 16),
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFFFAB40).withValues(alpha: 0.1),
+                  borderRadius: BorderRadius.circular(10),
+                  border:
+                      Border.all(color: const Color(0xFFFFAB40).withValues(alpha: 0.3)),
+                ),
+                child: const Text(
+                  "After scanning and paying, tap the button below. An admin "
+                  "will manually confirm the payment before your plan "
+                  "activates — this usually happens shortly, not instantly.",
+                  style: TextStyle(fontSize: 12, color: Color(0xFFFFAB40)),
+                ),
+              ),
+              const SizedBox(height: 16),
+              SizedBox(
+                width: double.infinity,
+                child: ElevatedButton(
+                  onPressed: _submitting ? null : _submit,
+                  child: _submitting
+                      ? const SizedBox(
+                          height: 18,
+                          width: 18,
+                          child: CircularProgressIndicator(
+                              strokeWidth: 2, color: Colors.white))
+                      : const Text("I've Paid"),
+                ),
+              ),
+            ],
+          );
+        },
       ),
     );
   }

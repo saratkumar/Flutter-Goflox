@@ -8,6 +8,7 @@ import '../../services/user_service.dart';
 import '../../services/waiting_list_service.dart';
 import '../../utils/app_colors.dart';
 import '../../utils/app_toast.dart';
+import '../../utils/time_utils.dart';
 
 class BookingsScreen extends StatefulWidget {
   const BookingsScreen({super.key});
@@ -64,6 +65,18 @@ class _BookingsScreenState extends State<BookingsScreen>
 class _BookingsTab extends StatelessWidget {
   Future<void> _cancel(BuildContext context, String id,
       Map<String, dynamic> data) async {
+    final bd = data['bookingDate'];
+    if (bd != null) {
+      final sessionStart = combineDateAndTime(
+          (bd as Timestamp).toDate(), data['bookingTime']?.toString() ?? '');
+      if (sessionStart != null &&
+          sessionStart.difference(DateTime.now()).inHours < 24) {
+        AppToast.error(context,
+            'Cancellations must be made at least 24 hours before the class');
+        return;
+      }
+    }
+
     final ok = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
@@ -105,7 +118,6 @@ class _BookingsTab extends StatelessWidget {
 
     // Try to admit next person from waiting list
     final classId = data['classId']?.toString() ?? '';
-    final bd = data['bookingDate'];
     final bt = data['bookingTime']?.toString() ?? '';
     final dn = data['displayName']?.toString() ?? '';
     if (classId.isNotEmpty && bd != null) {
