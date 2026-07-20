@@ -1,0 +1,205 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    // Safe against callers who don't have a users/{uid} doc yet (e.g. a
+    // brand-new user mid-sign-in, before their doc is created) — exists()
+    // never throws, unlike calling get().data on a missing document.
+    function callerRole() {
+      return exists(/databases/$(database)/documents/users/$(request.auth.uid))
+        ? get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role
+        : 'none';
+    }
+
+    function isStaff() {
+      return isSignedIn() && callerRole() in ['trainer', 'admin'];
+    }
+
+    function isAdmin() {
+      return isSignedIn() && callerRole() == 'admin';
+    }
+
+    // Mirrors the hardcoded bootstrap list in login_screen.dart
+    // (_superAdminEmails) — that Dart list is the actual source of truth,
+    // keep this in sync with it. Lets that one account self-heal back to
+    // admin/super_admin even if its role field is ever reset, since it's
+    // the account used to promote everyone else. Dart's own comment says
+    // to clear this list before a real production launch — do the same
+    // here when that happens.
+    function isDesignatedSuperAdmin() {
+      return isSignedIn() && request.auth.token.email in ['admin.psas@gmail.com'];
+    }
+
+    // ── Email queue (Trigger Email extension) ───────────────────────────
+    match /mail/{docId} {
+      // Client still writes this doc directly (booking confirmations, and
+      // waiting-list admission emails sent to a DIFFERENT user than the
+      // caller — see waiting_list_service.dart), so this can't be scoped
+      // to "recipient == caller" without breaking that flow. This is
+      // shape validation only — it does not stop a signed-in user from
+      // emailing an arbitrary address. The real fix is moving this queue
+      // write into a Cloud Function so the client never touches `mail`
+      // directly; recommended before a public (non-beta) launch.
+      allow create: if isSignedIn() &&
+        request.resource.data.keys().hasOnly(['to', 'message']) &&
+        request.resource.data.to is list &&
+        request.resource.data.to.size() == 1 &&
+        request.resource.data.message.keys().hasOnly(['subject', 'html', 'attachments']) &&
+        request.resource.data.message.subject is string &&
+        request.resource.data.message.html is string;
+      allow read, update, delete: if false;
+    }
+
+    // ── User profiles ────────────────────────────────────────────────────
+    match /users/{uid} {
+      allow read: if isSignedIn();
+
+      // Anyone can create their own doc (needed for first-login / invitation
+      // consumption in login_screen.dart), but only admins can change an
+      // EXISTING user's role/adminLevel/adminPermissions — closes the
+      // self-promotion hole where a client could set role: 'admin' on
+      // themselves via a normal profile write.
+      allow create: if isSignedIn() && request.auth.uid == uid;
+      allow update: if isSignedIn() && (
+        isAdmin() ||
+        (
+          request.auth.uid == uid &&
+          !request.resource.data.diff(resource.data).affectedKeys()
+            .hasAny(['role', 'adminLevel', 'adminPermissions'])
+        ) ||
+        (
+          request.auth.uid == uid &&
+          isDesignatedSuperAdmin() &&
+          request.resource.data.role == 'admin' &&
+          request.resource.data.adminLevel == 'super_admin'
+        )
+      );
+      allow delete: if isAdmin();
+    }
+
+    // ── Bookings / waiting list ───────────────────────────────────────────
+    // NOTE: create/update stay broad (isSignedIn()) rather than scoped to
+    // "owner or staff" — waiting_list_service.dart's auto-admission cascade
+    // (a client cancelling their OWN booking creates/updates a booking and
+    // waitingList doc for the NEXT person in line, a different uid) and
+    // class_service.dart's getBookingCount()/getWaitingCount() (unfiltered
+    // queries every client runs to check capacity) are both legitimate,
+    // currently-shipping features that a stricter rule would break —
+    // Firestore rejects an entire query outright if it can't prove every
+    // possible result satisfies the rule, it doesn't silently filter.
+    // Properly closing this needs an app-level change (e.g. a denormalized
+    // count field on the class doc, or moving admission into a Cloud
+    // Function) rather than a rules-only fix. Flagging as follow-up work.
+    match /bookings/{docId} { allow read, write: if isSignedIn(); }
+    match /waitingList/{docId} { allow read, write: if isSignedIn(); }
+
+    // ── Class catalog — admin manages, everyone reads ─────────────────────
+    match /classes/{docId} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin();
+    }
+    match /facilities/{docId} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin();
+    }
+    match /classTypes/{docId} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin();
+    }
+    match /membershipPlans/{docId} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin();
+    }
+
+    // ── Coupons ─────────────────────────────────────────────────────────────
+    match /coupons/{docId} {
+      allow read: if isSignedIn();
+      allow create, delete: if isAdmin();
+      allow update: if isSignedIn() &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['redeemedCount']) &&
+        request.resource.data.redeemedCount == resource.data.redeemedCount + 1;
+    }
+
+    // ── Requests — trainers/clients create their own, staff resolve ──────
+    match /adminRequests/{docId} {
+      allow read: if isSignedIn() && (resource.data.requestedBy == request.auth.uid || isStaff());
+      allow create: if isSignedIn() && request.resource.data.requestedBy == request.auth.uid;
+      allow update: if isStaff();
+      allow delete: if isSignedIn() && (resource.data.requestedBy == request.auth.uid || isStaff());
+    }
+    match /sessionLogs/{docId} {
+      allow read, write: if isAdmin();
+    }
+
+    // ── Payments / transactions ────────────────────────────────────────────
+    // Actual credit grants happen server-side via Cloud Function
+    // (FieldValue.increment after Stripe verification, see functions/
+    // index.js) — this doc is a display-only record for the admin UI, so a
+    // fabricated one can't grant real credits. Still scoping clientUid to
+    // the caller so no one can create a record attributed to someone else.
+    match /transactions/{docId} {
+      allow read: if isSignedIn() && (resource.data.clientUid == request.auth.uid || isAdmin());
+      allow create: if isSignedIn() && request.resource.data.clientUid == request.auth.uid;
+      allow update: if isAdmin() || (
+        isSignedIn() &&
+        resource.data.clientUid == request.auth.uid &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['invoiceEmailSent', 'invoiceEmailError'])
+      );
+      allow delete: if isAdmin();
+    }
+    match /payments/{docId} {
+      allow read: if isSignedIn() && (resource.data.userId == request.auth.uid || isAdmin());
+      allow write: if false;
+    }
+
+    // ── App housekeeping ────────────────────────────────────────────────────
+    match /appMeta/{docId} { allow read, write: if isAdmin(); }
+
+    // Read/delete your OWN invitation (matched by email, the doc ID) during
+    // first sign-in — must NOT require isAdmin(), since it's read before
+    // the signing-in user's own users/{uid} doc exists yet. Only admins
+    // create/update invitations (from the admin panel).
+    match /invitations/{docId} {
+      allow read, delete: if isSignedIn() && request.auth.token.email.lower() == docId;
+      allow create, update: if isAdmin();
+    }
+		match /appointmentSlots/{docId} {
+      allow read: if isSignedIn();
+      allow create, delete: if isAdmin();
+      // Claiming a free slot (null -> string) is open to any signed-in
+      // user — that's the booking action itself. Releasing (string ->
+      // null) is restricted to the admin or the original requester (looked
+      // up via the linked adminRequests doc), so one client can't grief
+      // another by clearing their active claim.
+      allow update: if isAdmin() || (
+        isSignedIn() &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['activeRequestId']) &&
+        (
+          (resource.data.activeRequestId == null && request.resource.data.activeRequestId is string) ||
+          (
+            resource.data.activeRequestId != null &&
+            request.resource.data.activeRequestId == null &&
+            get(/databases/$(database)/documents/adminRequests/$(resource.data.activeRequestId)).data.requestedBy == request.auth.uid
+          )
+        )
+      );
+    }
+    match /appMeta/paymentQr {
+      allow read: if isSignedIn();
+      allow write: if isAdmin();
+    }
+
+    match /qrPaymentRequests/{docId} {
+      allow read: if isSignedIn() && (resource.data.userId == request.auth.uid || isAdmin());
+      allow create: if isSignedIn() &&
+        request.resource.data.userId == request.auth.uid &&
+        request.resource.data.status == "pending";
+      allow update, delete: if isAdmin();
+    }
+  }
+}
