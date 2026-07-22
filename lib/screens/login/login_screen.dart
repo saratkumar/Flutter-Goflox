@@ -216,7 +216,7 @@ class _LoginScreenState extends State<LoginScreen> {
                   ),
                   const SizedBox(height: 12),
                   const Text(
-                    'Pegasus Sports & Athletic Society',
+                    'Pegasus Sports & Psychology Performance',
                     style: TextStyle(
                       fontSize: 14,
                       color: AppColors.textSecondary,
