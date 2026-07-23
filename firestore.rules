@@ -144,7 +144,12 @@ service cloud.firestore {
     // the caller so no one can create a record attributed to someone else.
     match /transactions/{docId} {
       allow read: if isSignedIn() && (resource.data.clientUid == request.auth.uid || isAdmin());
-      allow create: if isSignedIn() && request.resource.data.clientUid == request.auth.uid;
+      // isAdmin() bypass needed here (not just on update/delete): admin
+      // approval flows (qr_payment_service.dart, cash_payment_screen.dart)
+      // create this doc on behalf of the CLIENT being approved, so
+      // clientUid != request.auth.uid in that case.
+      allow create: if isSignedIn() &&
+        (request.resource.data.clientUid == request.auth.uid || isAdmin());
       allow update: if isAdmin() || (
         isSignedIn() &&
         resource.data.clientUid == request.auth.uid &&
