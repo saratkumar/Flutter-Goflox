@@ -153,9 +153,13 @@ service cloud.firestore {
       allow update: if isAdmin() || (
         isSignedIn() &&
         resource.data.clientUid == request.auth.uid &&
-        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['invoiceEmailSent', 'invoiceEmailError'])
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['invoiceEmailSent', 'invoiceEmailError', 'sheetRecorded'])
       );
-      allow delete: if isAdmin();
+      // Self-service card/Stripe purchases (memberships_screen.dart) delete
+      // their own now-durably-Sheet-recorded doc the same way admin-driven
+      // QR/cash approvals do — see InvoiceService.processWithInvoice callers.
+      allow delete: if isAdmin() ||
+        (isSignedIn() && resource.data.clientUid == request.auth.uid);
     }
     match /payments/{docId} {
       allow read: if isSignedIn() && (resource.data.userId == request.auth.uid || isAdmin());
